@@ -1,8 +1,5 @@
-<<<<<<< HEAD
 bins-for-merge/
-=======
 bin-for-merge/
->>>>>>> 672c617 (Update gitignore and main.c)
 build/
 managed_components/
 .pio/

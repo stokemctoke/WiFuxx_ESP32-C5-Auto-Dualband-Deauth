@@ -18,6 +18,7 @@
 #include "esp_system.h"
 #include "esp_attr.h"
 #include "esp_http_server.h"
+#include "mdns.h"
 #include "cJSON.h"
 #include "driver/i2c.h"
 #include "driver/gpio.h"
@@ -53,6 +54,7 @@ static const char *TAG = "WiFuxx";
 // g_settings.ap_channel); factory defaults are WF_DEF_AP_SSID / WF_DEF_AP_CHANNEL.
 #define WEBUI_AP_MAX_CONN  1
 #define WEBUI_AP_IP        "192.168.42.42"   // device IP, gateway and DNS in WebUI mode
+#define WEBUI_MDNS_HOST    "wifuxx"           // -> http://wifuxx.local (alongside the IP)
 #define WEBUI_SCAN_MAX     32                // APs surfaced in the WebUI scan list (attack stays MAX_TARGETS)
 
 // BOOT button — 2s hold (at runtime) enters WebUI.
@@ -61,6 +63,7 @@ static const char *TAG = "WiFuxx";
 // download mode (the app never runs), so we can only poll it AFTER boot.
 #define BOOT_BUTTON_GPIO   GPIO_NUM_28
 #define BUTTON_HOLD_MS     2000
+#define BUTTON_RESET_HOLD_MS 10000   // WebUI mode: hold this long to factory-reset (lockout escape)
 #define BUTTON_POLL_MS     20
 // =======================================================
 
@@ -960,6 +963,7 @@ static void display_task(void *pvParameters) {
             oled_draw_string(0, 3, g_settings.ap_ssid);
             oled_draw_string(0, 5, "http://");
             oled_draw_string(0, 6, WEBUI_AP_IP);
+            oled_draw_string(0, 7, "or " WEBUI_MDNS_HOST ".local");
             oled_flush();
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
@@ -1039,6 +1043,7 @@ static const char WEBUI_HTML[] =
 "<meta charset='UTF-8'>\n"
 "<meta name='viewport' content='width=device-width, initial-scale=1.0, maximum-scale=1.0'>\n"
 "<title>WiFuxx Control</title>\n"
+"<link rel='icon' href='data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA2NCA2NCc+PHJlY3Qgd2lkdGg9JzY0JyBoZWlnaHQ9JzY0JyByeD0nMTInIGZpbGw9JyMwMDAxMTEnLz48cGF0aCBkPSdNMzcgNSBMMTUgMzUgSDI5IEwyNyA1OSBMNDkgMjcgSDM1IFonIGZpbGw9JyNGQUEzMDcnLz48L3N2Zz4='>\n"
 "<style>\n"
 ":root{--bg:#000111;--mid:#1A1A1F;--card:#2A2D31;--yellow:#FFFF00;--orange:#FAA307;--cyan:#00FFFF;--muted:#9CA3AF;--red:#FF4444;}\n"
 "*{box-sizing:border-box;margin:0;padding:0;}\n"
@@ -1440,6 +1445,21 @@ static void http_server_start(void) {
     ESP_LOGI(TAG, "WebUI HTTP server running at http://%s", WEBUI_AP_IP);
 }
 
+// ==================== WebUI: mDNS (wifuxx.local) ====================
+// Lets phones reach the panel by name as well as by IP. Note: iOS/macOS resolve
+// .local out of the box; many Android browsers still need the raw IP, so the
+// connect screen keeps showing 192.168.42.42 too.
+static void mdns_webui_start(void) {
+    if (mdns_init() != ESP_OK) {
+        ESP_LOGW(TAG, "mDNS init failed — use http://%s", WEBUI_AP_IP);
+        return;
+    }
+    mdns_hostname_set(WEBUI_MDNS_HOST);
+    mdns_instance_name_set("WiFuxx Control");
+    mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+    ESP_LOGI(TAG, "mDNS up: http://%s.local (or http://%s)", WEBUI_MDNS_HOST, WEBUI_AP_IP);
+}
+
 // ==================== WebUI: Wi-Fi (AP for phone + STA so /scan works) ====================
 static void wifi_init_apsta_webui(void) {
     led_state = LED_STATE_WIFI_INIT;
@@ -1518,6 +1538,40 @@ static void button_task(void *pvParameters) {
     }
 }
 
+// ==================== BOOT Button: hold to factory-reset (WebUI mode) ====================
+// WebUI boot only. The button does nothing else here, so a long 10s hold is a
+// safe "lockout escape": if a user sets a WebUI password and forgets it, holding
+// BOOT wipes settings (incl. auth) back to defaults and reboots into a fresh,
+// open WebUI. Does not affect the 2s hold-to-enter-WebUI in ATTACK mode.
+static void webui_button_task(void *pvParameters) {
+    gpio_config_t io = {
+        .pin_bit_mask = 1ULL << BOOT_BUTTON_GPIO,
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io);
+
+    ESP_LOGI(TAG, "webui_button_task watching GPIO%d — hold %ds to factory-reset.",
+             BOOT_BUTTON_GPIO, BUTTON_RESET_HOLD_MS / 1000);
+
+    uint32_t held_ms = 0;
+    while (1) {
+        if (gpio_get_level(BOOT_BUTTON_GPIO) == 0) {   // active LOW = pressed
+            held_ms += BUTTON_POLL_MS;
+            if (held_ms >= BUTTON_RESET_HOLD_MS) {
+                ESP_LOGW(TAG, "BOOT held %lums in WebUI -> FACTORY RESET", (unsigned long)held_ms);
+                settings_reset();
+                reboot_into(BOOT_MODE_WEBUI);   // come back up fresh + open
+            }
+        } else {
+            held_ms = 0;   // released — require a clean continuous hold
+        }
+        vTaskDelay(pdMS_TO_TICKS(BUTTON_POLL_MS));
+    }
+}
+
 // ==================== Boot Splash (serial) ====================
 // Prints monitor_bitmap (80x80) as ASCII art to the serial monitor
 static void log_boot_splash(void) {
@@ -1564,9 +1618,11 @@ void app_main(void) {
         wifi_init_apsta_webui();
         led_state = LED_STATE_WEBUI_IDLE;             // solid orange
         http_server_start();
+        mdns_webui_start();                           // http://wifuxx.local
+        xTaskCreate(webui_button_task, "webui_btn", 2048, NULL, 3, NULL);  // hold BOOT 10s = factory reset
 
-        ESP_LOGI(TAG, "WebUI mode ready — join '%s', open http://%s",
-                 g_settings.ap_ssid, WEBUI_AP_IP);
+        ESP_LOGI(TAG, "WebUI mode ready — join '%s', open http://%s or http://%s.local",
+                 g_settings.ap_ssid, WEBUI_AP_IP, WEBUI_MDNS_HOST);
     } else {
         // -------- Attack mode (default): autonomous dual-band deauth --------
         xTaskCreate(display_task, "display", 4096, NULL, 2, NULL);

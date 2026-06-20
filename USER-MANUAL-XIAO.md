@@ -95,11 +95,11 @@ WiFuxx is a small board (about **55 × 35 mm**) with everything built in:
 
 ## 4. Switching On — What to Expect
 
-Slide the power switch to **ON**. WiFuxx plays a short startup sequence on the
-screen:
+Slide the power switch to **ON**. WiFuxx plays a short animated startup sequence
+on the screen:
 
-1. **WiFuxx logo**
-2. **Gallus Gadgets logo**
+1. The **Gallus Gadgets** logo fades in, then the wordmark flashes
+2. The **WiFuxx logo**
 3. A reminder screen:
    ```
    >> WiFuxx
@@ -154,6 +154,7 @@ Starlink_789
 Connect to:
 WiFuxx-Control      <- the Wi-Fi name to join
 http://192.168.42.42  <- the address to open in your browser
+or wifuxx.local       <- or this friendly name
 ```
 
 ---
@@ -190,11 +191,13 @@ On your phone, tablet, or laptop, open Wi-Fi settings and connect to:
 > connected anyway.
 
 **Step 3 — Open the control page**
-In a web browser, go to:
+In a web browser, go to **either** of these:
 ```
-http://192.168.42.42
+http://192.168.42.42      (always works)
+http://wifuxx.local       (friendlier; iPhone/Mac and most computers)
 ```
-(Type it exactly, including `http://`.)
+(Type it exactly, including `http://`.) If `wifuxx.local` doesn't resolve on your
+device — some Android phones don't support it — just use the numeric address.
 
 **Step 4 — Scan**
 Tap **SCAN**. A list of nearby networks appears, each showing its name, signal
@@ -217,11 +220,36 @@ off and back on — it always starts in Attack Mode.
 
 ---
 
-## 9. Buttons & Switch — Quick Reference
+## 9. Settings — Personalise WiFuxx
+
+Scroll down the control page to the **Settings** card. Changes are **saved on the
+device** and survive being switched off:
+
+| Setting | What it does |
+|---------|--------------|
+| **AP SSID / channel** | Rename the `WiFuxx-Control` hotspot and pick its Wi-Fi channel. |
+| **2.4G / 5G threshold** | How strong a network must be (dBm) before Attack Mode targets it. |
+| **2.4G / 5G burst** | How many deauth frames are sent per burst on each band. |
+| **WebUI user / pass** | Optional login for the control page. Leave the username blank for no login. |
+| **Skip boot splash** | Skips the startup logo animation for a faster boot. |
+
+Tap **SAVE SETTINGS** to store them. The hotspot name/channel and any login take
+effect the **next** time you open Control Mode. **RESET TO DEFAULTS** restores
+everything to factory settings.
+
+> 🔑 **Locked yourself out?** If you set a login and forget it, you can't reach the
+> page to fix it — so there's a hardware escape: in Control Mode, **hold BOOT for
+> 10 seconds**. WiFuxx wipes all settings (including the login) back to defaults
+> and restarts into an open control panel.
+
+---
+
+## 10. Buttons & Switch — Quick Reference
 
 | Action | Result |
 |--------|--------|
 | Hold **BOOT** (on the XIAO) ~2 s *while running* | Opens Control Mode (web panel) |
+| Hold **BOOT** ~10 s *while in Control Mode* | Factory-reset (wipes settings + login) |
 | **Power switch** off → on | Restarts in automatic Attack Mode |
 
 > **Important:** Do **not** hold the BOOT button *while switching the unit on*. On
@@ -231,7 +259,7 @@ off and back on — it always starts in Attack Mode.
 
 ---
 
-## 10. Troubleshooting & Error States
+## 11. Troubleshooting & Error States
 
 | Symptom | What it means / what to do |
 |---------|----------------------------|
@@ -241,6 +269,8 @@ off and back on — it always starts in Attack Mode.
 | **Screen shows it found no networks** | Nothing nearby was strong enough to target. Move closer to the network you're testing; it keeps rescanning automatically. |
 | **Can't find the "WiFuxx-Control" Wi-Fi** | Confirm you're in Control Mode (the screen shows the connect info). Refresh your phone's Wi-Fi list. |
 | **Joined WiFuxx-Control but the page won't load** | Type the full address `http://192.168.42.42` (not `https`). On Android, turn off mobile data and "auto-switch to mobile network" so the phone stays on the device's hotspot. |
+| **`wifuxx.local` doesn't open** | Some Android phones don't support `.local` names — just use `http://192.168.42.42` instead. iPhones, Macs and most computers handle `wifuxx.local` fine. |
+| **Set a WebUI password and forgot it** | In Control Mode, hold **BOOT for 10 seconds** — WiFuxx factory-resets (wiping the login) and restarts into an open control panel. |
 | **Phone keeps dropping the WiFuxx-Control connection** | It's an internet-less network; tell your phone to stay connected to it. |
 | **Scan shows few or no networks** | Move closer to your target and tap **SCAN** again. Hidden or very weak networks may not appear. |
 | **A device won't disconnect during a test** | Some modern routers and phones resist deauthentication (a protection called PMF/802.11w). 5 GHz also has shorter range — move closer. This is a property of the target, not a fault in WiFuxx. |
@@ -249,7 +279,7 @@ off and back on — it always starts in Attack Mode.
 
 ---
 
-## 11. Safety Reminder
+## 12. Safety Reminder
 
 WiFuxx temporarily disrupts Wi-Fi connections. Never use it where doing so could
 cause harm or affect networks and people you don't have permission to test —

@@ -7,7 +7,7 @@
 ![image](WiFuxx_DualBand-Deauth-Firmware.jpg)
 
 
-**WiFuxx** is a compact, autonomous deauthentication tool designed for the XIAO ESP32-C5. It scans for nearby Wi-Fi networks, filters by signal strength, and launches targeted deauth attacks indefinitely — all displayed on a tiny OLED screen.
+**WiFuxx** is a compact, autonomous deauthentication tool designed for the XIAO ESP32-C5. It scans for nearby Wi-Fi networks, filters by signal strength, and launches targeted deauth attacks indefinitely — all displayed on a tiny OLED screen. It runs hands-free by default, with an **optional phone-friendly web control panel** for hand-picking targets and tuning settings.
 
 ---
 
@@ -29,8 +29,10 @@
 
 ## 📡 Features
 
-- **⚡ Fully Autonomous** — No web interface, no control needed. Power on and it attacks indefinitely.
-- **📊 Smart Targeting** — Separate signal thresholds per band: > -75 dBm (2.4GHz) and > -70 dBm (5GHz).
+- **⚡ Autonomous by Default** — Power on and it scans, then attacks indefinitely. No app, no setup, no internet.
+- **📱 Optional Web Control Panel** — Hold **BOOT** for 2 s to reboot into a phone-friendly WebUI: scan and hand-pick a single AP, a network's 2.4 + 5 GHz pair, or everything. Reachable at `http://192.168.42.42` **or `http://wifuxx.local`** (mDNS). The radio is time-separated from the attack by a reboot, sidestepping the ESP32-C5's single-radio AP-vs-attack conflict.
+- **💾 Persistent Settings (NVS)** — Edit the AP name/channel, per-band RSSI thresholds, per-band burst sizes, an optional WebUI login, and the boot splash right from the panel — all saved across reboots. Forgot the login? Hold **BOOT for 10 s** in the panel to factory-reset.
+- **📊 Smart Targeting** — Separate signal thresholds per band: > -75 dBm (2.4GHz) and > -70 dBm (5GHz) by default.
 - **🖥️ OLED Display** — Real-time status on a 128×64 screen:
   - Per-band AP counts (2.4GHz / 5GHz)
   - Current status (IDLE / SCAN / ATTACK + elapsed time)
@@ -195,6 +197,17 @@ If no targets above the signal threshold are found on boot, the device waits 25 
 | SCAN   | Scanning for networks, counting strong APs per band          |
 | ATTACK | Actively deauthenticating targets (shows elapsed time in seconds) |
 
+### Control Mode (Web Panel)
+
+Hold **BOOT** for ~2 s while running and WiFuxx reboots into Control Mode: it brings up an open SoftAP (`WiFuxx-Control`) hosting a web panel — no attack runs in this mode.
+
+1. Join the Wi-Fi network `WiFuxx-Control` (no password).
+2. Browse to **`http://192.168.42.42`** or **`http://wifuxx.local`**.
+3. **SCAN**, then choose **DEAUTH** (one AP), **DUAL-BAND SAME AP**, or **DEAUTH ALL** — the device reboots into Attack Mode targeting your choice.
+4. The **Settings** card edits the AP name/channel, thresholds, burst sizes, an optional login, and the boot splash (saved to NVS), with a **Reset to defaults** button.
+
+> Set a WebUI login and forgot it? Hold **BOOT for 10 s** while in Control Mode to wipe settings back to defaults. Power-cycling always returns to automatic Attack Mode.
+
 ### OLED Display Layout
 
 ```
@@ -234,16 +247,18 @@ To change the brightness or pin, edit these defines at the top of `main.c`:
 
 ### Configuration Parameters
 
-Edit these values at the top of `main.c` to customise behaviour:
+The most-used settings — AP name/channel, per-band RSSI thresholds, per-band burst sizes, an optional WebUI login, and skip-splash — are editable **live from the WebUI Settings panel** and persist in NVS. Their factory defaults live in `main/settings.h`:
 
 ```c
-#define BAD_SIGNAL_THRESHOLD_24    -75   // Attack 2.4GHz APs stronger than this (dBm)
-#define BAD_SIGNAL_THRESHOLD_5     -70   // Attack 5GHz APs stronger than this (dBm)
-#define MAX_TARGETS                10    // Maximum APs to target
-#define AUTO_SCAN_INTERVAL_SEC     25    // Seconds between retries when no targets found
-#define BURST_SIZE_24GHZ           25    // Deauth frames per burst on 2.4GHz
-#define BURST_SIZE_5GHZ            35    // Deauth frames per burst on 5GHz
+#define WF_DEF_THR_24      (-75)  // Attack 2.4GHz APs stronger than this (dBm)
+#define WF_DEF_THR_5       (-70)  // Attack 5GHz APs stronger than this (dBm)
+#define WF_DEF_BURST_24    30     // Deauth frames per burst on 2.4GHz
+#define WF_DEF_BURST_5     50     // Deauth frames per burst on 5GHz
+#define WF_DEF_AP_SSID     "WiFuxx-Control"  // Control-mode SoftAP name
+#define WF_DEF_AP_CHANNEL  1
 ```
+
+Remaining compile-time constants (`MAX_TARGETS`, `AUTO_SCAN_INTERVAL_SEC`, GPIO/LED pins) stay at the top of `main.c`.
 
 ---
 

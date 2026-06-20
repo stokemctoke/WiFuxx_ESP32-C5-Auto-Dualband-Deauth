@@ -18,9 +18,9 @@ To choose exactly what to test, open the web panel:
 1. While it's running, **hold the BOOT button (~2 sec)** — it restarts into
    Control Mode.
 2. On your phone, join the Wi-Fi network **`WiFuxx-Control`** *(no password)*.
-3. In a browser, open **`http://192.168.42.42`**
+3. In a browser, open **`http://192.168.42.42`** (or **`http://wifuxx.local`**).
 4. Tap **SCAN**, then choose **DEAUTH** (one network), **DUAL-BAND SAME AP**, or
-   **DEAUTH ALL**.
+   **DEAUTH ALL**. The **Settings** panel lets you tune and save options.
 
 It restarts and attacks your choice. Hold **BOOT** again to reopen the panel.
 

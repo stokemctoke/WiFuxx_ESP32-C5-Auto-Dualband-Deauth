@@ -151,6 +151,7 @@ static led_strip_handle_t   status_led = NULL;
 #include "boot_bitmap.h"
 #include "gallus_bitmap.h"
 #include "monitor_bitmap.h"
+#include "favicon.h"
 
 // ==================== Status LED Driver ====================
 static void status_led_init(void) {
@@ -1043,7 +1044,7 @@ static const char WEBUI_HTML[] =
 "<meta charset='UTF-8'>\n"
 "<meta name='viewport' content='width=device-width, initial-scale=1.0, maximum-scale=1.0'>\n"
 "<title>WiFuxx Control</title>\n"
-"<link rel='icon' href='data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA2NCA2NCc+PHJlY3Qgd2lkdGg9JzY0JyBoZWlnaHQ9JzY0JyByeD0nMTInIGZpbGw9JyMwMDAxMTEnLz48cGF0aCBkPSdNMzcgNSBMMTUgMzUgSDI5IEwyNyA1OSBMNDkgMjcgSDM1IFonIGZpbGw9JyNGQUEzMDcnLz48L3N2Zz4='>\n"
+"<link rel='icon' type='image/x-icon' href='/favicon.ico'>\n"
 "<style>\n"
 ":root{--bg:#000111;--mid:#1A1A1F;--card:#2A2D31;--yellow:#FFFF00;--orange:#FAA307;--cyan:#00FFFF;--muted:#9CA3AF;--red:#FF4444;}\n"
 "*{box-sizing:border-box;margin:0;padding:0;}\n"
@@ -1256,6 +1257,14 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
     return httpd_resp_send(req, WEBUI_HTML, HTTPD_RESP_USE_STRLEN);
 }
 
+// Served without the auth guard so the browser tab icon loads even at the login
+// prompt. Cached aggressively since it's a fixed asset.
+static esp_err_t favicon_get_handler(httpd_req_t *req) {
+    httpd_resp_set_type(req, "image/x-icon");
+    httpd_resp_set_hdr(req, "Cache-Control", "max-age=86400");
+    return httpd_resp_send(req, (const char *)favicon_ico, sizeof(favicon_ico));
+}
+
 static esp_err_t scan_get_handler(httpd_req_t *req) {
     if (!webui_authorized(req)) return ESP_OK;
     char *json = do_webui_scan_json();
@@ -1422,6 +1431,7 @@ static httpd_handle_t http_server = NULL;
 static void http_server_start(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_open_sockets = 7;    // LWIP cap: httpd reserves 3, so 7 is the safe max
+    config.max_uri_handlers = 12;   // we register 7; headroom for future routes
     config.task_priority    = 4;
     config.stack_size       = 8192;
     config.lru_purge_enable = true;
@@ -1433,6 +1443,7 @@ static void http_server_start(void) {
 
     httpd_uri_t uris[] = {
         { .uri = "/",             .method = HTTP_GET,  .handler = root_get_handler    },
+        { .uri = "/favicon.ico",  .method = HTTP_GET,  .handler = favicon_get_handler },
         { .uri = "/scan",         .method = HTTP_GET,  .handler = scan_get_handler    },
         { .uri = "/attack",       .method = HTTP_POST, .handler = attack_post_handler },
         { .uri = "/config",       .method = HTTP_GET,  .handler = config_get_handler  },

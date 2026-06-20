@@ -37,7 +37,6 @@
   - Per-band AP counts (2.4GHz / 5GHz)
   - Current status (IDLE / SCAN / ATTACK + elapsed time)
   - Scrolling list of target SSIDs
-- **🌈 Status LED** — WS2812B colour signals on GPIO27 (25% brightness) — works out of the box with the **ESP32-C5 Dev Board v1.2** onboard LED. See [Status LED](#-status-led-signals).
 - **🔫 Dual-Band Support** — Attacks both 2.4 GHz and 5 GHz networks simultaneously.
 - **🚀 High Performance** — Optimised channel-hopping with batch I2C display updates (~100x fewer I2C transactions vs naive approach).
 - **📝 Serial Logging** — Detailed logs via USB serial for debugging.
@@ -221,28 +220,6 @@ Hold **BOOT** for ~2 s while running and WiFuxx reboots into Control Mode: it br
 │ TP-Link_XXX                    │  ← Target 4
 │ Xfinity_YYY                    │  ← Target 5
 └────────────────────────────────┘
-```
-
-### 🌈 Status LED Signals
-
-WiFuxx drives a single WS2812B on **GPIO27** at 25% brightness so you can see what it's doing at a glance, even when the OLED isn't in your line of sight.
-
-This was added specifically for the **Espressif ESP32-C5 Dev Board v1.2**, which has an onboard WS2812B wired to GPIO27 — no extra hardware required, the firmware lights it up automatically. On the XIAO ESP32-C5 (or any other C5 board without an onboard addressable LED), you can ignore this pin or wire an external WS2812B / SK6812 to GPIO27 with a common ground.
-
-| State           | Colour            | Pattern        | Meaning                                          |
-| --------------- | ----------------- | -------------- | ------------------------------------------------ |
-| Boot            | 🔵 Blue           | Solid          | Chip powering up, before Wi-Fi/OLED init         |
-| Wi-Fi Init      | 🟣 Magenta        | Solid          | Wi-Fi stack and OLED coming online               |
-| Scanning        | 🩵 Cyan           | Fast pulse     | Actively scanning for nearby networks            |
-| No Targets      | 🟡 Yellow         | Slow blink     | Scan finished, nothing above threshold — retrying|
-| Targets Found   | 🟢 Green          | Solid (~½ s)   | Targets locked, attack about to start            |
-| Attacking       | 🔴 Red            | Breathing      | Deauth burst loop running                        |
-
-To change the brightness or pin, edit these defines at the top of `main.c`:
-
-```c
-#define STATUS_LED_GPIO        GPIO_NUM_27
-#define STATUS_LED_BRIGHTNESS  64    // 25% of 255 — raise toward 255 for brighter
 ```
 
 ### Configuration Parameters

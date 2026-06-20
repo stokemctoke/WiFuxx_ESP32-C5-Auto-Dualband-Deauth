@@ -462,25 +462,29 @@ static void oled_draw_bitmap_fullscreen(const uint8_t *bmp) {
 // screen is purely a heads-up — we have all the time we need here.
 static void oled_display_text_intro(void) {
     // -- Gallus Gadgets: saltire logo fades in via the contrast register --
+    // Quadratic ease-in (level ~ i^2) so it emerges slowly from near-black and
+    // brightens smoothly — many small steps keep the ramp gradient-smooth.
     oled_set_contrast(0x00);
     oled_draw_bitmap_fullscreen(saltire_bitmap);
-    for (int c = 0; c <= 0xFF; c += 0x11) {         // ~16 steps, smooth fade up
-        oled_set_contrast((uint8_t)c);
-        vTaskDelay(pdMS_TO_TICKS(28));
+    const int fade_steps = 64;
+    for (int i = 0; i <= fade_steps; i++) {
+        int level = (i * i * 255) / (fade_steps * fade_steps);
+        oled_set_contrast((uint8_t)level);
+        vTaskDelay(pdMS_TO_TICKS(11));
     }
     oled_set_contrast(0xFF);
     vTaskDelay(pdMS_TO_TICKS(1100));
 
     // -- Gallus Gadgets wordmark: settle, then flash/pop (normal <-> inverted) --
     oled_draw_bitmap_fullscreen(gallus_bitmap);
-    vTaskDelay(pdMS_TO_TICKS(450));
+    vTaskDelay(pdMS_TO_TICKS(400));
     for (int i = 0; i < 3; i++) {
         oled_draw_bitmap_fullscreen(gallus_flash_bitmap);
-        vTaskDelay(pdMS_TO_TICKS(90));
+        vTaskDelay(pdMS_TO_TICKS(55));
         oled_draw_bitmap_fullscreen(gallus_bitmap);
-        vTaskDelay(pdMS_TO_TICKS(110));
+        vTaskDelay(pdMS_TO_TICKS(70));
     }
-    vTaskDelay(pdMS_TO_TICKS(900));
+    vTaskDelay(pdMS_TO_TICKS(850));
 
     // -- WiFuxx product logo --
     oled_draw_bitmap_fullscreen(boot_bitmap);

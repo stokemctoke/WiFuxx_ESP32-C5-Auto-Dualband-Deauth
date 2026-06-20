@@ -120,6 +120,10 @@ static display_info_t current_display_info = {0};
 // scan/attack screen. Set once at boot in WebUI mode (mode is fixed per boot).
 static volatile bool g_webui_display = false;
 
+// Set by the 10s-BOOT-hold factory reset so display_task shows a confirmation
+// screen before the device reboots (otherwise the reset is silent).
+static volatile bool g_webui_resetting = false;
+
 // Deauth reason codes
 static const uint16_t deauth_reasons[] = {
     0x0001, 0x0003, 0x0006, 0x0007, 0x0008, 0x000C, 0x000D
@@ -988,6 +992,18 @@ static void display_task(void *pvParameters) {
     if (!g_webui_display && !g_settings.skip_splash) oled_display_text_intro();
 
     while (1) {
+        // WebUI factory-reset confirmation (10s BOOT hold) — shown before reboot.
+        if (g_webui_resetting) {
+            for (int p = 0; p < 8; p++) oled_clear_page(p);
+            oled_draw_string(0, 1, ">> FACTORY RESET");
+            oled_draw_string(0, 3, "Settings wiped");
+            oled_draw_string(0, 4, "to defaults.");
+            oled_draw_string(0, 6, "Restarting...");
+            oled_flush();
+            vTaskDelay(pdMS_TO_TICKS(200));
+            continue;
+        }
+
         // WebUI mode: static "connect to" screen, per the v2 spec.
         if (g_webui_display) {
             for (int p = 0; p < 8; p++) oled_clear_page(p);
@@ -1606,7 +1622,9 @@ static void webui_button_task(void *pvParameters) {
             if (held_ms >= BUTTON_RESET_HOLD_MS) {
                 ESP_LOGW(TAG, "BOOT held %lums in WebUI -> FACTORY RESET", (unsigned long)held_ms);
                 settings_reset();
-                reboot_into(BOOT_MODE_WEBUI);   // come back up fresh + open
+                g_webui_resetting = true;            // display_task shows confirmation
+                vTaskDelay(pdMS_TO_TICKS(2500));     // let the user read it
+                reboot_into(BOOT_MODE_WEBUI);        // come back up fresh + open
             }
         } else {
             held_ms = 0;   // released — require a clean continuous hold

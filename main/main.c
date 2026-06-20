@@ -18,21 +18,22 @@
 #include "esp_system.h"
 #include "esp_attr.h"
 #include "esp_http_server.h"
+#include "mdns.h"
 #include "cJSON.h"
 #include "driver/i2c.h"
 #include "driver/gpio.h"
 #include "led_strip.h"
+#include "settings.h"
 
 static const char *TAG = "WiFuxx";
 
 // ==================== CONFIGURATION ====================
-#define BAD_SIGNAL_THRESHOLD_24    -75
-#define BAD_SIGNAL_THRESHOLD_5     -70
+// RSSI thresholds and burst sizes are now user-tunable at runtime and live in
+// g_settings (NVS-backed, see settings.h). Their factory defaults are the
+// WF_DEF_* macros there.
 #define MAX_TARGETS                16
 #define AUTO_SCAN_INTERVAL_SEC     25   // only used when no targets found on boot
 
-#define BURST_SIZE_24GHZ           30
-#define BURST_SIZE_5GHZ            50
 #define CHANNEL_SWITCH_DELAY_MS    12
 #define TARGET_BURST_DELAY_MS      1
 #define BAND_SWITCH_DELAY_MS       5
@@ -49,11 +50,11 @@ static const char *TAG = "WiFuxx";
 #define STATUS_LED_BRIGHTNESS  64    // 25% of 255 (0.25 * 255 ~= 64)
 #define STATUS_LED_TICK_MS     40    // animation update period
 
-// SoftAP / WebUI mode
-#define WEBUI_AP_SSID      "WiFuxx-Control"
-#define WEBUI_AP_CHANNEL   1
+// SoftAP / WebUI mode — SSID and channel are user-tunable (g_settings.ap_ssid /
+// g_settings.ap_channel); factory defaults are WF_DEF_AP_SSID / WF_DEF_AP_CHANNEL.
 #define WEBUI_AP_MAX_CONN  1
 #define WEBUI_AP_IP        "192.168.42.42"   // device IP, gateway and DNS in WebUI mode
+#define WEBUI_MDNS_HOST    "wifuxx"           // -> http://wifuxx.local (alongside the IP)
 #define WEBUI_SCAN_MAX     32                // APs surfaced in the WebUI scan list (attack stays MAX_TARGETS)
 
 // BOOT button — 2s hold (at runtime) enters WebUI.
@@ -62,6 +63,7 @@ static const char *TAG = "WiFuxx";
 // download mode (the app never runs), so we can only poll it AFTER boot.
 #define BOOT_BUTTON_GPIO   GPIO_NUM_28
 #define BUTTON_HOLD_MS     2000
+#define BUTTON_RESET_HOLD_MS 10000   // WebUI mode: hold this long to factory-reset (lockout escape)
 #define BUTTON_POLL_MS     20
 // =======================================================
 
@@ -148,7 +150,10 @@ static led_strip_handle_t   status_led = NULL;
 
 #include "boot_bitmap.h"
 #include "gallus_bitmap.h"
+#include "gallus_flash_bitmap.h"
+#include "saltire_bitmap.h"
 #include "monitor_bitmap.h"
+#include "favicon.h"
 
 // ==================== Status LED Driver ====================
 static void status_led_init(void) {
@@ -315,6 +320,12 @@ static void oled_init(void) {
     oled_flush();
 }
 
+// SSD1306 contrast (0x81). Used to fade the splash in/out without redrawing.
+static void oled_set_contrast(uint8_t level) {
+    uint8_t cmds[] = { 0x81, level };
+    oled_send_cmds(cmds, sizeof(cmds));
+}
+
 static void oled_draw_char(uint8_t x, uint8_t page, char c) {
     if (c < 32 || c > 126) c = 32;
     if (x + 8 > 128) return;
@@ -444,16 +455,40 @@ static void oled_draw_bitmap_fullscreen(const uint8_t *bmp) {
     oled_flush();
 }
 
-// Boot sequence (ATTACK mode): WiFuxx logo -> Gallus Gadgets logo -> WebUI hint /
-// disclaimer, then hand off to scanning. The BOOT-hold works the entire time the
-// device is attacking, so this screen is purely a heads-up — we have all the time
-// we need here.
+// Boot sequence: "studio intro -> title card" — the Gallus Gadgets brand
+// animates in (saltire logo fades up, then the wordmark flashes), then the
+// WiFuxx product logo + the WebUI hint / disclaimer, before handing off to
+// scanning. The BOOT-hold works the whole time the device is attacking, so this
+// screen is purely a heads-up — we have all the time we need here.
 static void oled_display_text_intro(void) {
-    oled_draw_bitmap_fullscreen(boot_bitmap);       // WiFuxx logo
-    vTaskDelay(pdMS_TO_TICKS(2800));
+    // -- Gallus Gadgets: saltire logo fades in via the contrast register --
+    // Quadratic ease-in (level ~ i^2) so it emerges slowly from near-black and
+    // brightens smoothly — many small steps keep the ramp gradient-smooth.
+    oled_set_contrast(0x00);
+    oled_draw_bitmap_fullscreen(saltire_bitmap);
+    const int fade_steps = 64;
+    for (int i = 0; i <= fade_steps; i++) {
+        int level = (i * i * 255) / (fade_steps * fade_steps);
+        oled_set_contrast((uint8_t)level);
+        vTaskDelay(pdMS_TO_TICKS(11));
+    }
+    oled_set_contrast(0xFF);
+    vTaskDelay(pdMS_TO_TICKS(1100));
 
-    oled_draw_bitmap_fullscreen(gallus_bitmap);     // Gallus Gadgets logo
-    vTaskDelay(pdMS_TO_TICKS(2800));
+    // -- Gallus Gadgets wordmark: settle, then flash/pop (normal <-> inverted) --
+    oled_draw_bitmap_fullscreen(gallus_bitmap);
+    vTaskDelay(pdMS_TO_TICKS(400));
+    for (int i = 0; i < 3; i++) {
+        oled_draw_bitmap_fullscreen(gallus_flash_bitmap);
+        vTaskDelay(pdMS_TO_TICKS(55));
+        oled_draw_bitmap_fullscreen(gallus_bitmap);
+        vTaskDelay(pdMS_TO_TICKS(70));
+    }
+    vTaskDelay(pdMS_TO_TICKS(850));
+
+    // -- WiFuxx product logo --
+    oled_draw_bitmap_fullscreen(boot_bitmap);
+    vTaskDelay(pdMS_TO_TICKS(2400));
 
     oled_clear_screen();
     oled_draw_string(0, 0, ">> WiFuxx");
@@ -630,12 +665,12 @@ static void multi_band_attack_task(void *pvParameters) {
         uint32_t elapsed = get_time_sec() - attack_start_time;
 
         if (targets_24.count > 0) {
-            attack_band(&targets_24, BURST_SIZE_24GHZ, false);
+            attack_band(&targets_24, g_settings.burst_24, false);
             vTaskDelay(pdMS_TO_TICKS(BAND_SWITCH_DELAY_MS));
         }
 
         if (targets_5.count > 0) {
-            attack_band(&targets_5, BURST_SIZE_5GHZ, true);
+            attack_band(&targets_5, g_settings.burst_5, true);
             vTaskDelay(pdMS_TO_TICKS(BAND_SWITCH_DELAY_MS));
         }
 
@@ -763,8 +798,8 @@ static uint16_t scan_and_filter_targets(void) {
 
     for (int i = 0; i < ap_num && auto_targets.count < MAX_TARGETS; i++) {
         int threshold = (ap_info[i].primary <= 14)
-                        ? BAD_SIGNAL_THRESHOLD_24
-                        : BAD_SIGNAL_THRESHOLD_5;
+                        ? g_settings.thr_24
+                        : g_settings.thr_5;
 
         if (ap_info[i].rssi <= threshold) continue;
 
@@ -906,8 +941,8 @@ static void autonomous_mode_task(void *pvParameters) {
     ESP_LOGI(TAG, "║          PRO DEAUTH PEN TEST           ║");
     ESP_LOGI(TAG, "║        AUTONOMOUS MODE ACTIVE          ║");
     ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
-    ESP_LOGI(TAG, "2.4GHz threshold : > %d dBm", BAD_SIGNAL_THRESHOLD_24);
-    ESP_LOGI(TAG, "5GHz threshold   : > %d dBm", BAD_SIGNAL_THRESHOLD_5);
+    ESP_LOGI(TAG, "2.4GHz threshold : > %d dBm", g_settings.thr_24);
+    ESP_LOGI(TAG, "5GHz threshold   : > %d dBm", g_settings.thr_5);
     ESP_LOGI(TAG, "Max targets      : %d", MAX_TARGETS);
     ESP_LOGI(TAG, "Scan interval    : %d s (when no targets found)", AUTO_SCAN_INTERVAL_SEC);
     ESP_LOGI(TAG, "Attack duration  : INFINITE");
@@ -950,7 +985,7 @@ static void display_task(void *pvParameters) {
     uint8_t scroll_index  = 0;
     const int max_ssid_lines = 5;
 
-    if (!g_webui_display) oled_display_text_intro();
+    if (!g_webui_display && !g_settings.skip_splash) oled_display_text_intro();
 
     while (1) {
         // WebUI mode: static "connect to" screen, per the v2 spec.
@@ -958,9 +993,10 @@ static void display_task(void *pvParameters) {
             for (int p = 0; p < 8; p++) oled_clear_page(p);
             oled_draw_string(0, 0, ">> WiFuxx WebUI");
             oled_draw_string(0, 2, "Connect to:");
-            oled_draw_string(0, 3, WEBUI_AP_SSID);
+            oled_draw_string(0, 3, g_settings.ap_ssid);
             oled_draw_string(0, 5, "http://");
             oled_draw_string(0, 6, WEBUI_AP_IP);
+            oled_draw_string(0, 7, "or " WEBUI_MDNS_HOST ".local");
             oled_flush();
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
@@ -1026,7 +1062,7 @@ static void wifi_init_sta(void) {
     ESP_LOGI(TAG, "║      OPTIMISED DUAL-BAND DEAUTHER      ║");
     ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
     ESP_LOGI(TAG, "Wi-Fi STA + promiscuous enabled");
-    ESP_LOGI(TAG, "2.4GHz burst: %d | 5GHz burst: %d", BURST_SIZE_24GHZ, BURST_SIZE_5GHZ);
+    ESP_LOGI(TAG, "2.4GHz burst: %d | 5GHz burst: %d", g_settings.burst_24, g_settings.burst_5);
     ESP_LOGI(TAG, "USE ONLY ON YOUR OWN NETWORKS!");
 }
 
@@ -1040,6 +1076,7 @@ static const char WEBUI_HTML[] =
 "<meta charset='UTF-8'>\n"
 "<meta name='viewport' content='width=device-width, initial-scale=1.0, maximum-scale=1.0'>\n"
 "<title>WiFuxx Control</title>\n"
+"<link rel='icon' type='image/x-icon' href='/favicon.ico'>\n"
 "<style>\n"
 ":root{--bg:#000111;--mid:#1A1A1F;--card:#2A2D31;--yellow:#FFFF00;--orange:#FAA307;--cyan:#00FFFF;--muted:#9CA3AF;--red:#FF4444;}\n"
 "*{box-sizing:border-box;margin:0;padding:0;}\n"
@@ -1078,12 +1115,31 @@ static const char WEBUI_HTML[] =
 "@keyframes s{to{transform:rotate(360deg);}}\n"
 "footer{text-align:center;color:var(--muted);font-family:monospace;font-size:.7rem;letter-spacing:.05em;padding:1.25rem .75rem 0;}\n"
 "footer .gg{color:var(--orange);}\n"
+"label{display:block;font-size:.75rem;color:var(--muted);margin-bottom:.7rem;letter-spacing:.03em;}\n"
+"label input{display:block;width:100%;margin-top:.3rem;padding:.5rem .6rem;background:var(--mid);border:1px solid #3a3d42;border-radius:6px;color:var(--yellow);font-size:.9rem;}\n"
+".chk{display:flex;align-items:center;gap:.5rem;margin:.2rem 0 1rem;}\n"
+".chk input{width:auto;margin:0;}\n"
+"#cfgsave{margin-top:.2rem;}\n"
+"#cfgreset{margin-top:.6rem;}\n"
 "</style></head><body>\n"
 "<header><h1>WiFuxx</h1><p>// by Gallus Gadgets</p></header>\n"
 "<main>\n"
 "<div class='card'><h2>Scan</h2><div class='scan-row'><button class='btn btn-cyan' id='scan'>SCAN</button><span id='scanmsg'>Tap SCAN to discover networks.</span></div></div>\n"
 "<div class='card'><h2>Attack</h2><button class='btn btn-orange' id='all'>DEAUTH ALL</button></div>\n"
 "<div class='card'><h2>Networks</h2><div id='netlist'><p class='empty'>No scan yet.</p></div></div>\n"
+"<div class='card'><h2>Settings</h2>\n"
+"<label>AP SSID<input id='ap_ssid' maxlength='32'></label>\n"
+"<label>AP channel (1-13)<input id='ap_channel' type='number' min='1' max='13'></label>\n"
+"<label>2.4G threshold dBm (-95..-30)<input id='thr_24' type='number' min='-95' max='-30'></label>\n"
+"<label>5G threshold dBm (-95..-30)<input id='thr_5' type='number' min='-95' max='-30'></label>\n"
+"<label>2.4G burst (1-200)<input id='burst_24' type='number' min='1' max='200'></label>\n"
+"<label>5G burst (1-200)<input id='burst_5' type='number' min='1' max='200'></label>\n"
+"<label>WebUI user<input id='ui_user' maxlength='16' placeholder='blank = no login'></label>\n"
+"<label>WebUI pass<input id='ui_pass' type='password' maxlength='32' placeholder='unchanged'></label>\n"
+"<label class='chk'><input id='skip_splash' type='checkbox'> Skip boot splash</label>\n"
+"<button class='btn btn-orange' id='cfgsave'>SAVE SETTINGS</button>\n"
+"<button class='btn btn-cyan' id='cfgreset'>RESET TO DEFAULTS</button>\n"
+"</div>\n"
 "</main>\n"
 "<footer>&gt;_ <span class='gg'>Gallus Gadgets</span> // hack your own</footer>\n"
 "<div id='toast'></div>\n"
@@ -1128,6 +1184,24 @@ static const char WEBUI_HTML[] =
 "  const t=e.target;\n"
 "  if(t.dataset.mac)attack({mode:'single',mac:t.dataset.mac});\n"
 "  else if(t.dataset.ssid)attack({mode:'dualband',ssid:t.dataset.ssid});\n"
+"};\n"
+"const $=id=>document.getElementById(id);\n"
+"function loadCfg(){fetch('/config').then(r=>r.json()).then(c=>{\n"
+"  $('ap_ssid').value=c.ap_ssid;$('ap_channel').value=c.ap_channel;$('thr_24').value=c.thr_24;$('thr_5').value=c.thr_5;\n"
+"  $('burst_24').value=c.burst_24;$('burst_5').value=c.burst_5;$('ui_user').value=c.ui_user;$('skip_splash').checked=c.skip_splash;\n"
+"}).catch(()=>{});}\n"
+"loadCfg();\n"
+"$('cfgsave').onclick=()=>{\n"
+"  const b={ap_ssid:$('ap_ssid').value,ap_channel:+$('ap_channel').value,thr_24:+$('thr_24').value,thr_5:+$('thr_5').value,\n"
+"    burst_24:+$('burst_24').value,burst_5:+$('burst_5').value,ui_user:$('ui_user').value,skip_splash:$('skip_splash').checked};\n"
+"  if($('ui_pass').value)b.ui_pass=$('ui_pass').value;\n"
+"  fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})\n"
+"    .then(r=>r.json()).then(d=>{toast(d.ok?'Saved. SSID/channel/login apply on next WebUI boot.':'Save failed');$('ui_pass').value='';})\n"
+"    .catch(()=>toast('Save failed'));\n"
+"};\n"
+"$('cfgreset').onclick=()=>{\n"
+"  if(!confirm('Reset all settings to defaults?'))return;\n"
+"  fetch('/config/reset',{method:'POST'}).then(r=>r.json()).then(()=>{toast('Reset to defaults');loadCfg();}).catch(()=>toast('Reset failed'));\n"
 "};\n"
 "</script></body></html>";
 
@@ -1190,12 +1264,41 @@ static char *do_webui_scan_json(void) {
 }
 
 // ==================== WebUI: HTTP Handlers ====================
+// Optional HTTP Basic auth. When a username is configured, every handler checks
+// this first; with no username the WebUI stays open (default). On failure it
+// emits a 401 challenge and the caller should just `return ESP_OK`.
+static bool webui_authorized(httpd_req_t *req) {
+    const char *expected = settings_expected_auth();
+    if (!expected) return true;   // auth disabled
+
+    char got[96];
+    if (httpd_req_get_hdr_value_str(req, "Authorization", got, sizeof(got)) == ESP_OK
+        && strcmp(got, expected) == 0) {
+        return true;
+    }
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"WiFuxx\"");
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_sendstr(req, "Authentication required");
+    return false;
+}
+
 static esp_err_t root_get_handler(httpd_req_t *req) {
+    if (!webui_authorized(req)) return ESP_OK;
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, WEBUI_HTML, HTTPD_RESP_USE_STRLEN);
 }
 
+// Served without the auth guard so the browser tab icon loads even at the login
+// prompt. Cached aggressively since it's a fixed asset.
+static esp_err_t favicon_get_handler(httpd_req_t *req) {
+    httpd_resp_set_type(req, "image/x-icon");
+    httpd_resp_set_hdr(req, "Cache-Control", "max-age=86400");
+    return httpd_resp_send(req, (const char *)favicon_ico, sizeof(favicon_ico));
+}
+
 static esp_err_t scan_get_handler(httpd_req_t *req) {
+    if (!webui_authorized(req)) return ESP_OK;
     char *json = do_webui_scan_json();
     if (!json) { httpd_resp_send_500(req); return ESP_FAIL; }
     httpd_resp_set_type(req, "application/json");
@@ -1215,6 +1318,7 @@ static bool parse_mac(const char *s, uint8_t out[6]) {
 // POST /attack — store the chosen target selection in RTC and reboot into ATTACK.
 // Body: {"mode":"all"} | {"mode":"single","mac":".."} | {"mode":"dualband","ssid":".."}
 static esp_err_t attack_post_handler(httpd_req_t *req) {
+    if (!webui_authorized(req)) return ESP_OK;
     char buf[256];
     int n = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (n <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, NULL); return ESP_FAIL; }
@@ -1268,12 +1372,98 @@ static esp_err_t attack_post_handler(httpd_req_t *req) {
     return ESP_OK;                  // not reached
 }
 
+// ==================== WebUI: Settings (GET/POST /config, POST /config/reset) ====================
+static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+// GET /config — current settings as JSON. ui_pass is never sent back.
+static esp_err_t config_get_handler(httpd_req_t *req) {
+    if (!webui_authorized(req)) return ESP_OK;
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "ap_ssid",     g_settings.ap_ssid);
+    cJSON_AddNumberToObject(o, "ap_channel",  g_settings.ap_channel);
+    cJSON_AddNumberToObject(o, "thr_24",      g_settings.thr_24);
+    cJSON_AddNumberToObject(o, "thr_5",       g_settings.thr_5);
+    cJSON_AddNumberToObject(o, "burst_24",    g_settings.burst_24);
+    cJSON_AddNumberToObject(o, "burst_5",     g_settings.burst_5);
+    cJSON_AddStringToObject(o, "ui_user",     g_settings.ui_user);
+    cJSON_AddBoolToObject  (o, "skip_splash", g_settings.skip_splash);
+
+    char *out = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, out ? out : "{}");
+    cJSON_free(out);
+    return ESP_OK;
+}
+
+// POST /config — partial update; only the fields present in the body change.
+// ui_pass is updated only when supplied, so it survives edits to other fields.
+static esp_err_t config_post_handler(httpd_req_t *req) {
+    if (!webui_authorized(req)) return ESP_OK;
+
+    char buf[512];
+    int n = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (n <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, NULL); return ESP_FAIL; }
+    buf[n] = '\0';
+
+    cJSON *j = cJSON_Parse(buf);
+    if (!j) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, NULL); return ESP_FAIL; }
+
+    cJSON *it;
+    if ((it = cJSON_GetObjectItem(j, "ap_ssid")) && cJSON_IsString(it) && it->valuestring[0]) {
+        strncpy(g_settings.ap_ssid, it->valuestring, sizeof(g_settings.ap_ssid) - 1);
+        g_settings.ap_ssid[sizeof(g_settings.ap_ssid) - 1] = '\0';
+    }
+    if ((it = cJSON_GetObjectItem(j, "ap_channel")) && cJSON_IsNumber(it))
+        g_settings.ap_channel = clampi(it->valueint, 1, 13);
+    if ((it = cJSON_GetObjectItem(j, "thr_24")) && cJSON_IsNumber(it))
+        g_settings.thr_24 = clampi(it->valueint, -95, -30);
+    if ((it = cJSON_GetObjectItem(j, "thr_5")) && cJSON_IsNumber(it))
+        g_settings.thr_5 = clampi(it->valueint, -95, -30);
+    if ((it = cJSON_GetObjectItem(j, "burst_24")) && cJSON_IsNumber(it))
+        g_settings.burst_24 = clampi(it->valueint, 1, 200);
+    if ((it = cJSON_GetObjectItem(j, "burst_5")) && cJSON_IsNumber(it))
+        g_settings.burst_5 = clampi(it->valueint, 1, 200);
+    if ((it = cJSON_GetObjectItem(j, "ui_user")) && cJSON_IsString(it)) {
+        strncpy(g_settings.ui_user, it->valuestring, sizeof(g_settings.ui_user) - 1);
+        g_settings.ui_user[sizeof(g_settings.ui_user) - 1] = '\0';
+    }
+    if ((it = cJSON_GetObjectItem(j, "ui_pass")) && cJSON_IsString(it)) {
+        strncpy(g_settings.ui_pass, it->valuestring, sizeof(g_settings.ui_pass) - 1);
+        g_settings.ui_pass[sizeof(g_settings.ui_pass) - 1] = '\0';
+    }
+    if ((it = cJSON_GetObjectItem(j, "skip_splash")) && cJSON_IsBool(it))
+        g_settings.skip_splash = cJSON_IsTrue(it);
+    cJSON_Delete(j);
+
+    esp_err_t e = settings_save();
+    httpd_resp_set_type(req, "application/json");
+    if (e == ESP_OK) {
+        httpd_resp_sendstr(req, "{\"ok\":true}");
+    } else {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "{\"error\":\"save failed\"}");
+    }
+    return ESP_OK;
+}
+
+// POST /config/reset — wipe to factory defaults.
+static esp_err_t config_reset_handler(httpd_req_t *req) {
+    if (!webui_authorized(req)) return ESP_OK;
+    settings_reset();
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
 // ==================== WebUI: HTTP Server ====================
 static httpd_handle_t http_server = NULL;
 
 static void http_server_start(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_open_sockets = 7;    // LWIP cap: httpd reserves 3, so 7 is the safe max
+    config.max_uri_handlers = 12;   // we register 7; headroom for future routes
     config.task_priority    = 4;
     config.stack_size       = 8192;
     config.lru_purge_enable = true;
@@ -1284,14 +1474,33 @@ static void http_server_start(void) {
     }
 
     httpd_uri_t uris[] = {
-        { .uri = "/",       .method = HTTP_GET,  .handler = root_get_handler   },
-        { .uri = "/scan",   .method = HTTP_GET,  .handler = scan_get_handler   },
-        { .uri = "/attack", .method = HTTP_POST, .handler = attack_post_handler },
+        { .uri = "/",             .method = HTTP_GET,  .handler = root_get_handler    },
+        { .uri = "/favicon.ico",  .method = HTTP_GET,  .handler = favicon_get_handler },
+        { .uri = "/scan",         .method = HTTP_GET,  .handler = scan_get_handler    },
+        { .uri = "/attack",       .method = HTTP_POST, .handler = attack_post_handler },
+        { .uri = "/config",       .method = HTTP_GET,  .handler = config_get_handler  },
+        { .uri = "/config",       .method = HTTP_POST, .handler = config_post_handler },
+        { .uri = "/config/reset", .method = HTTP_POST, .handler = config_reset_handler },
     };
     for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++)
         httpd_register_uri_handler(http_server, &uris[i]);
 
     ESP_LOGI(TAG, "WebUI HTTP server running at http://%s", WEBUI_AP_IP);
+}
+
+// ==================== WebUI: mDNS (wifuxx.local) ====================
+// Lets phones reach the panel by name as well as by IP. Note: iOS/macOS resolve
+// .local out of the box; many Android browsers still need the raw IP, so the
+// connect screen keeps showing 192.168.42.42 too.
+static void mdns_webui_start(void) {
+    if (mdns_init() != ESP_OK) {
+        ESP_LOGW(TAG, "mDNS init failed — use http://%s", WEBUI_AP_IP);
+        return;
+    }
+    mdns_hostname_set(WEBUI_MDNS_HOST);
+    mdns_instance_name_set("WiFuxx Control");
+    mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+    ESP_LOGI(TAG, "mDNS up: http://%s.local (or http://%s)", WEBUI_MDNS_HOST, WEBUI_AP_IP);
 }
 
 // ==================== WebUI: Wi-Fi (AP for phone + STA so /scan works) ====================
@@ -1317,21 +1526,22 @@ static void wifi_init_apsta_webui(void) {
 
     wifi_config_t ap_config = {
         .ap = {
-            .ssid            = WEBUI_AP_SSID,
-            .ssid_len        = strlen(WEBUI_AP_SSID),
-            .channel         = WEBUI_AP_CHANNEL,
             .password        = "",
             .max_connection  = WEBUI_AP_MAX_CONN,
             .authmode        = WIFI_AUTH_OPEN,
             .beacon_interval = 100,
         },
     };
+    // SSID and channel come from user settings (NVS), applied at boot.
+    strncpy((char *)ap_config.ap.ssid, g_settings.ap_ssid, sizeof(ap_config.ap.ssid) - 1);
+    ap_config.ap.ssid_len = strlen((char *)ap_config.ap.ssid);
+    ap_config.ap.channel  = g_settings.ap_channel;
     esp_wifi_set_config(WIFI_IF_AP, &ap_config);
     esp_wifi_start();
     // No promiscuous mode in WebUI — raw deauth injection only runs in ATTACK boot.
 
     ESP_LOGI(TAG, "WebUI SoftAP '%s' (ch %d) up; open http://%s",
-             WEBUI_AP_SSID, WEBUI_AP_CHANNEL, WEBUI_AP_IP);
+             g_settings.ap_ssid, g_settings.ap_channel, WEBUI_AP_IP);
 }
 
 // ==================== BOOT Button: hold to enter WebUI ====================
@@ -1371,6 +1581,40 @@ static void button_task(void *pvParameters) {
     }
 }
 
+// ==================== BOOT Button: hold to factory-reset (WebUI mode) ====================
+// WebUI boot only. The button does nothing else here, so a long 10s hold is a
+// safe "lockout escape": if a user sets a WebUI password and forgets it, holding
+// BOOT wipes settings (incl. auth) back to defaults and reboots into a fresh,
+// open WebUI. Does not affect the 2s hold-to-enter-WebUI in ATTACK mode.
+static void webui_button_task(void *pvParameters) {
+    gpio_config_t io = {
+        .pin_bit_mask = 1ULL << BOOT_BUTTON_GPIO,
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io);
+
+    ESP_LOGI(TAG, "webui_button_task watching GPIO%d — hold %ds to factory-reset.",
+             BOOT_BUTTON_GPIO, BUTTON_RESET_HOLD_MS / 1000);
+
+    uint32_t held_ms = 0;
+    while (1) {
+        if (gpio_get_level(BOOT_BUTTON_GPIO) == 0) {   // active LOW = pressed
+            held_ms += BUTTON_POLL_MS;
+            if (held_ms >= BUTTON_RESET_HOLD_MS) {
+                ESP_LOGW(TAG, "BOOT held %lums in WebUI -> FACTORY RESET", (unsigned long)held_ms);
+                settings_reset();
+                reboot_into(BOOT_MODE_WEBUI);   // come back up fresh + open
+            }
+        } else {
+            held_ms = 0;   // released — require a clean continuous hold
+        }
+        vTaskDelay(pdMS_TO_TICKS(BUTTON_POLL_MS));
+    }
+}
+
 // ==================== Boot Splash (serial) ====================
 // Prints monitor_bitmap (80x80) as ASCII art to the serial monitor
 static void log_boot_splash(void) {
@@ -1386,19 +1630,23 @@ static void log_boot_splash(void) {
 
 // ==================== Main ====================
 void app_main(void) {
-    log_boot_splash();
     boot_mode_init();   // pick ATTACK (default) or WEBUI from persisted RTC state
 
-    status_led_init();
-    led_state = LED_STATE_BOOT;
-    xTaskCreate(status_led_task, "status_led", 2048, NULL, 1, NULL);
-
+    // NVS up first so user settings (incl. skip_splash) are available before the
+    // splash and before Wi-Fi/attack config reads any tunables.
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+    settings_load();
+
+    if (!g_settings.skip_splash) log_boot_splash();
+
+    status_led_init();
+    led_state = LED_STATE_BOOT;
+    xTaskCreate(status_led_task, "status_led", 2048, NULL, 1, NULL);
 
     // Common peripherals
     oled_init();
@@ -1413,9 +1661,11 @@ void app_main(void) {
         wifi_init_apsta_webui();
         led_state = LED_STATE_WEBUI_IDLE;             // solid orange
         http_server_start();
+        mdns_webui_start();                           // http://wifuxx.local
+        xTaskCreate(webui_button_task, "webui_btn", 2048, NULL, 3, NULL);  // hold BOOT 10s = factory reset
 
-        ESP_LOGI(TAG, "WebUI mode ready — join '%s', open http://%s",
-                 WEBUI_AP_SSID, WEBUI_AP_IP);
+        ESP_LOGI(TAG, "WebUI mode ready — join '%s', open http://%s or http://%s.local",
+                 g_settings.ap_ssid, WEBUI_AP_IP, WEBUI_MDNS_HOST);
     } else {
         // -------- Attack mode (default): autonomous dual-band deauth --------
         xTaskCreate(display_task, "display", 4096, NULL, 2, NULL);

@@ -150,6 +150,8 @@ static led_strip_handle_t   status_led = NULL;
 
 #include "boot_bitmap.h"
 #include "gallus_bitmap.h"
+#include "gallus_flash_bitmap.h"
+#include "saltire_bitmap.h"
 #include "monitor_bitmap.h"
 #include "favicon.h"
 
@@ -318,6 +320,12 @@ static void oled_init(void) {
     oled_flush();
 }
 
+// SSD1306 contrast (0x81). Used to fade the splash in/out without redrawing.
+static void oled_set_contrast(uint8_t level) {
+    uint8_t cmds[] = { 0x81, level };
+    oled_send_cmds(cmds, sizeof(cmds));
+}
+
 static void oled_draw_char(uint8_t x, uint8_t page, char c) {
     if (c < 32 || c > 126) c = 32;
     if (x + 8 > 128) return;
@@ -447,16 +455,36 @@ static void oled_draw_bitmap_fullscreen(const uint8_t *bmp) {
     oled_flush();
 }
 
-// Boot sequence (ATTACK mode): WiFuxx logo -> Gallus Gadgets logo -> WebUI hint /
-// disclaimer, then hand off to scanning. The BOOT-hold works the entire time the
-// device is attacking, so this screen is purely a heads-up — we have all the time
-// we need here.
+// Boot sequence: "studio intro -> title card" — the Gallus Gadgets brand
+// animates in (saltire logo fades up, then the wordmark flashes), then the
+// WiFuxx product logo + the WebUI hint / disclaimer, before handing off to
+// scanning. The BOOT-hold works the whole time the device is attacking, so this
+// screen is purely a heads-up — we have all the time we need here.
 static void oled_display_text_intro(void) {
-    oled_draw_bitmap_fullscreen(boot_bitmap);       // WiFuxx logo
-    vTaskDelay(pdMS_TO_TICKS(2800));
+    // -- Gallus Gadgets: saltire logo fades in via the contrast register --
+    oled_set_contrast(0x00);
+    oled_draw_bitmap_fullscreen(saltire_bitmap);
+    for (int c = 0; c <= 0xFF; c += 0x11) {         // ~16 steps, smooth fade up
+        oled_set_contrast((uint8_t)c);
+        vTaskDelay(pdMS_TO_TICKS(28));
+    }
+    oled_set_contrast(0xFF);
+    vTaskDelay(pdMS_TO_TICKS(1100));
 
-    oled_draw_bitmap_fullscreen(gallus_bitmap);     // Gallus Gadgets logo
-    vTaskDelay(pdMS_TO_TICKS(2800));
+    // -- Gallus Gadgets wordmark: settle, then flash/pop (normal <-> inverted) --
+    oled_draw_bitmap_fullscreen(gallus_bitmap);
+    vTaskDelay(pdMS_TO_TICKS(450));
+    for (int i = 0; i < 3; i++) {
+        oled_draw_bitmap_fullscreen(gallus_flash_bitmap);
+        vTaskDelay(pdMS_TO_TICKS(90));
+        oled_draw_bitmap_fullscreen(gallus_bitmap);
+        vTaskDelay(pdMS_TO_TICKS(110));
+    }
+    vTaskDelay(pdMS_TO_TICKS(900));
+
+    // -- WiFuxx product logo --
+    oled_draw_bitmap_fullscreen(boot_bitmap);
+    vTaskDelay(pdMS_TO_TICKS(2400));
 
     oled_clear_screen();
     oled_draw_string(0, 0, ">> WiFuxx");

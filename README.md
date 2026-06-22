@@ -98,11 +98,11 @@ This is the recommended flashing tool for the ESP32-C5. Many popular online flas
 
 ### Steps
 
-1. Download `WiFuxx_v1.1b_merged.bin` from the [Releases](https://github.com/stokemctoke/WiFuxx_ESP32-C5-Auto-Dualband-Deauth/releases) page
+1. Download `WiFuxx_v2.0_merged.bin` from the [Releases](https://github.com/stokemctoke/WiFuxx_ESP32-C5-Auto-Dualband-Deauth/releases) page
 2. Open **ESPConnect** in a Chromium-based browser (Chrome, Edge — Firefox is not supported for WebSerial)
 3. Connect your XIAO ESP32-C5 via USB-C
 4. Click **Connect** and select your device from the port list
-5. Choose **Custom Flash** and select `WiFuxx_v1.0c_merged.bin`
+5. Choose **Custom Flash** and select `WiFuxx_v2.0_merged.bin`
 6. Set the flash address to `0x0`
 7. Click **Flash** and wait for it to complete
 8. Press the reset button on the XIAO — WiFuxx will boot immediately

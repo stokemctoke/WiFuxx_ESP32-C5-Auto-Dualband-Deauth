@@ -197,6 +197,23 @@ static uint8_t triangle_wave(uint32_t t_ms, uint32_t period_ms) {
          : (uint8_t)((period_ms - phase) * 255 / half);
 }
 
+// Full-saturation HSV -> RGB. `hue` 0..255 wraps the colour wheel, `val` 0..255
+// is brightness. Used for the WebUI-idle rainbow breath.
+static void hsv_to_rgb(uint8_t hue, uint8_t val, uint8_t *r, uint8_t *g, uint8_t *b) {
+    uint8_t region = hue / 43;                 // 0..5 sextant
+    uint8_t rem    = (hue - region * 43) * 6;  // position within sextant, 0..255
+    uint8_t q  = (uint16_t)val * (255 - rem) / 255;
+    uint8_t tt = (uint16_t)val * rem / 255;
+    switch (region) {
+        case 0:  *r = val; *g = tt;  *b = 0;   break;
+        case 1:  *r = q;   *g = val; *b = 0;   break;
+        case 2:  *r = 0;   *g = val; *b = tt;  break;
+        case 3:  *r = 0;   *g = q;   *b = val; break;
+        case 4:  *r = tt;  *g = 0;   *b = val; break;
+        default: *r = val; *g = 0;   *b = q;   break;
+    }
+}
+
 static void status_led_task(void *pvParameters) {
     uint32_t t = 0;
     while (1) {
@@ -234,10 +251,16 @@ static void status_led_task(void *pvParameters) {
                 r = lvl;
                 break;
             }
-            case LED_STATE_WEBUI_IDLE:
-                // Static orange (255,80,0) — led_scale() brings it to ~25% brightness
-                r = 255; g = 80; b = 0;
+            case LED_STATE_WEBUI_IDLE: {
+                // Rainbow breath: a slow ~4s breath whose hue drifts so each breath
+                // starts on a new colour, looping the spectrum about every 24s. A
+                // brightness floor keeps it gently glowing instead of going black.
+                uint8_t breath = triangle_wave(t, 4000);
+                if (breath < 40) breath = 40;
+                uint8_t hue = (t / 94) & 0xFF;   // 256 * 94ms ≈ 24s full rainbow
+                hsv_to_rgb(hue, breath, &r, &g, &b);
                 break;
+            }
         }
 
         if (status_led) {

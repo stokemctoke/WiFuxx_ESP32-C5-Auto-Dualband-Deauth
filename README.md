@@ -9,6 +9,8 @@
 
 **WiFuxx** is a compact, autonomous deauthentication tool designed for the XIAO ESP32-C5. It scans for nearby Wi-Fi networks, filters by signal strength, and launches targeted deauth attacks indefinitely — all displayed on a tiny OLED screen. It runs hands-free by default, with an **optional phone-friendly web control panel** for hand-picking targets and tuning settings.
 
+> 🔌 **Running on a bare ESP32-C5-DevKitC-1 (no OLED)?** The same binary works there too — see the **[Dev-Kit Edition README](README-DEVKIT.md)** for flashing and the onboard RGB-LED status guide.
+
 ---
 
 ## ⚠️ Legal Disclaimer

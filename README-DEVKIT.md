@@ -1,0 +1,152 @@
+[![Ko-Fi](https://img.shields.io/badge/Ko--Fi-Support%20Me-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/stoke)
+[![My Website](https://img.shields.io/badge/Website-gallusgadgets.com-FAA307)](https://gallusgadgets.com)
+[![Platform: ESP32-C5](https://img.shields.io/badge/Platform-ESP32--C5-blue)](https://www.espressif.com/en/products/socs/esp32-c5)
+
+# WiFuxx — Dev-Kit Edition
+
+**by Gallus Gadgets** · *autonomous dual-band Wi-Fi deauther*
+
+WiFuxx running on a **bare Espressif ESP32-C5-DevKitC-1** — no screen required. The
+DevKit's **onboard RGB LED** is your status display, and the optional **web control
+panel** gives you full control from a phone. It's the **same firmware** as the XIAO
+build: one binary, `WiFuxx_v2.0_merged.bin`, runs on both boards.
+
+> 👉 Using the XIAO custom board with an OLED instead? See the main **[README](README.md)**.
+
+---
+
+## ⚠️ Legal Disclaimer
+
+> **IMPORTANT:** Laws regarding Wi-Fi deauthentication vary significantly by country. In many jurisdictions, using a deauther against networks you do not own or have explicit permission to test is **illegal** and may result in criminal charges, fines, or imprisonment.
+>
+> **This tool is intended for:**
+>
+> - ✅ Testing your own network security
+> - ✅ Educational purposes in controlled environments
+> - ✅ Authorised penetration testing
+>
+> **DO NOT USE on public, neighbour, or any networks without written permission.**
+>
+> **By using this software, you accept full responsibility for your actions.**
+
+---
+
+## 🛠️ What You Need
+
+| Component                     | Notes                                          |
+| ----------------------------- | ---------------------------------------------- |
+| ESP32-C5-DevKitC-1 (v1.2)     | Bare DevKit — onboard WS2812 RGB LED on GPIO27 |
+| USB-C Cable                   | Power and flashing (native USB serial)         |
+
+No OLED, no wiring, no extra parts — flash it and go. (An OLED is optional: wire an
+SSD1306 to **SDA = GPIO23 / SCL = GPIO24** and the firmware will use it automatically.)
+
+---
+
+## ⚡ Flashing the Pre-built Binary
+
+The DevKit uses the **identical** `WiFuxx_v2.0_merged.bin` as the XIAO build — the
+merged binary bundles the bootloader, partition table, and app, so flashing at `0x0`
+is all that's needed.
+
+### Recommended Tool: ESPConnect
+
+**[https://thelastoutpostworkshop.github.io/ESPConnect/](https://thelastoutpostworkshop.github.io/ESPConnect/)**
+
+This is the recommended flashing tool for the ESP32-C5. Many popular online flash tools do not yet support the C5, but ESPConnect does, and it shows useful chip info (flash size, MAC, revision) in the browser.
+
+### Steps
+
+1. Download `WiFuxx_v2.0_merged.bin` from the [Releases](https://github.com/stokemctoke/WiFuxx_ESP32-C5-Auto-Dualband-Deauth/releases) page.
+2. Open **ESPConnect** in a Chromium-based browser (Chrome or Edge — Firefox is not supported for WebSerial).
+3. Plug the DevKit into USB-C and connect to its serial port.
+4. Choose **Custom Flash** and select `WiFuxx_v2.0_merged.bin`.
+5. Set the flash address to `0x0`.
+6. Click **Flash** and wait for it to complete.
+
+**Prefer the command line?**
+
+```bash
+esptool.py -p /dev/ttyACM0 write_flash 0x0 WiFuxx_v2.0_merged.bin
+# or, from a built tree:  idf.py -p /dev/ttyACM0 flash
+```
+
+> If flashing won't start, hold **BOOT** while tapping **RESET** to force download mode, then release.
+
+---
+
+## 🌈 RGB LED Status Guide
+
+With no screen, the **onboard RGB LED (GPIO27)** is how you read what WiFuxx is doing.
+It's driven at ~25% brightness so it's comfortable to watch.
+
+| State           | Colour     | Pattern       | Meaning                                           |
+| --------------- | ---------- | ------------- | ------------------------------------------------- |
+| Boot            | 🔵 Blue    | Solid         | Chip powering up, before Wi-Fi init               |
+| Wi-Fi Init      | 🟣 Magenta | Solid         | Wi-Fi stack coming online                         |
+| Scanning        | 🩵 Cyan    | Fast pulse    | Actively scanning for nearby networks             |
+| No Targets      | 🟡 Yellow  | Slow blink    | Scan finished, nothing above threshold — retrying |
+| Targets Found   | 🟢 Green   | Solid (~½ s)  | Targets locked, attack about to start             |
+| Attacking       | 🔴 Red     | Breathing     | Deauth burst loop running                         |
+| WebUI Idle      | 🟠 Orange  | Static        | Control Mode AP is up, waiting for your browser   |
+
+---
+
+## 🎮 Using It Without a Screen
+
+### Automatic mode (default)
+Power on → after a moment WiFuxx scans, then **attacks the strong Wi-Fi networks near
+you indefinitely**. Watch the LED: 🔵 → 🩵 → 🟢 → 🔴. That's it — fully hands-free.
+
+### Control Mode (web panel)
+To hand-pick targets or change settings, open the web panel:
+
+1. While it's running, **hold the BOOT button for ~2 s** — it reboots into Control Mode
+   (LED turns **🟠 orange**).
+2. On your phone, join the Wi-Fi network **`WiFuxx-Control`** *(no password by default)*.
+3. In a browser, open **`http://192.168.42.42`** or **`http://wifuxx.local`**.
+4. Tap **SCAN**, then choose **DEAUTH** (one network), **DUAL-BAND SAME AP**, or **DEAUTH
+   ALL**. The **Settings** panel lets you tune thresholds, burst sizes, the AP name, an
+   optional login, and more — all saved across reboots (NVS).
+
+WiFuxx reboots and attacks your choice. Hold **BOOT** again to reopen the panel.
+
+### Factory reset / lockout escape
+Set a WebUI login and forgot it? In Control Mode, **hold BOOT for ~10 s** — WiFuxx wipes
+all settings back to defaults and reboots. (Default AP SSID `WiFuxx-Control`, IP
+`192.168.42.42`.)
+
+### Power off
+Unplug USB. Power-on always restarts in automatic mode.
+
+---
+
+## 📝 Notes & Caveats
+
+- **No on-screen hints.** On a screenless DevKit the LED and this guide are your only
+  cues — there's no OLED prompting you to "connect to WiFuxx-Control". Bookmark
+  `http://wifuxx.local`.
+- **Don't hold BOOT while powering on / resetting** unless you *want* firmware-update
+  (download) mode — the app won't run. Just power-cycle without touching BOOT.
+- **FYI (hardware):** on the ESP32-C5, the strapping combo GPIO27 = low **and** GPIO28 =
+  low at reset is invalid. This only matters at the instant of reset (before the app
+  runs), so normal operation is unaffected — just don't externally force the LED line low
+  while pressing BOOT.
+
+---
+
+## 🔫 Same Firmware, Two Boards
+
+| | XIAO custom board | Bare DevKitC-1 |
+| --- | --- | --- |
+| Binary | `WiFuxx_v2.0_merged.bin` | **same** `WiFuxx_v2.0_merged.bin` |
+| Status display | OLED (SSD1306) | Onboard RGB LED (GPIO27) |
+| BOOT button | GPIO28 | GPIO28 (same C5 strapping pin) |
+| WebUI | ✅ `wifuxx.local` | ✅ `wifuxx.local` |
+| Factory reset (10 s BOOT) | ✅ | ✅ |
+
+---
+
+```
+>_ Gallus Gadgets // build. break. learn.
+```

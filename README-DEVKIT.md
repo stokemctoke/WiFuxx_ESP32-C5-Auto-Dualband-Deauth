@@ -88,7 +88,7 @@ It's driven at ~25% brightness so it's comfortable to watch.
 | No Targets      | 🟡 Yellow  | Slow blink    | Scan finished, nothing above threshold — retrying |
 | Targets Found   | 🟢 Green   | Solid (~½ s)  | Targets locked, attack about to start             |
 | Attacking       | 🔴 Red     | Breathing     | Deauth burst loop running                         |
-| WebUI Idle      | 🟠 Orange  | Static        | Control Mode AP is up, waiting for your browser   |
+| WebUI / Control | 🌈 Rainbow | Slow breath   | Control Mode AP is up, waiting for your browser   |
 
 ---
 
@@ -97,12 +97,13 @@ It's driven at ~25% brightness so it's comfortable to watch.
 ### Automatic mode (default)
 Power on → after a moment WiFuxx scans, then **attacks the strong Wi-Fi networks near
 you indefinitely**. Watch the LED: 🔵 → 🩵 → 🟢 → 🔴. That's it — fully hands-free.
+(In Control Mode the LED instead does a slow **🌈 rainbow breath**.)
 
 ### Control Mode (web panel)
 To hand-pick targets or change settings, open the web panel:
 
 1. While it's running, **hold the BOOT button for ~2 s** — it reboots into Control Mode
-   (LED turns **🟠 orange**).
+   (LED starts a **🌈 slow rainbow breath**).
 2. On your phone, join the Wi-Fi network **`WiFuxx-Control`** *(no password by default)*.
 3. In a browser, open **`http://192.168.42.42`** or **`http://wifuxx.local`**.
 4. Tap **SCAN**, then choose **DEAUTH** (one network), **DUAL-BAND SAME AP**, or **DEAUTH

@@ -9,7 +9,7 @@
 
 **WiFuxx** is a compact, autonomous deauthentication tool designed for the XIAO ESP32-C5. It scans for nearby Wi-Fi networks, filters by signal strength, and launches targeted deauth attacks indefinitely — all displayed on a tiny OLED screen. It runs hands-free by default, with an **optional phone-friendly web control panel** for hand-picking targets and tuning settings.
 
-> 🔌 **Running on a bare ESP32-C5-DevKitC-1 (no OLED)?** The same binary works there too — see the **[Dev-Kit Edition README](README-DEVKIT.md)** for flashing and the onboard RGB-LED status guide.
+> 🔌 **Running on a bare ESP32-C5-DevKitC-1 (no OLED)?** The same binary works there too — see the **[Dev-Kit User Manual](USER-MANUAL-DEVKIT.md)** for flashing and the onboard RGB-LED status guide.
 
 ---
 
@@ -100,11 +100,11 @@ This is the recommended flashing tool for the ESP32-C5. Many popular online flas
 
 ### Steps
 
-1. Download `WiFuxx_v2.1.0_merged.bin` from the [Releases](https://github.com/stokemctoke/WiFuxx_ESP32-C5-Auto-Dualband-Deauth/releases) page
+1. Download `WiFuxx_v2.1.1_merged.bin` from the [Releases](https://github.com/stokemctoke/WiFuxx_ESP32-C5-Auto-Dualband-Deauth/releases) page
 2. Open **ESPConnect** in a Chromium-based browser (Chrome, Edge — Firefox is not supported for WebSerial)
 3. Connect your XIAO ESP32-C5 via USB-C
 4. Click **Connect** and select your device from the port list
-5. Choose **Custom Flash** and select `WiFuxx_v2.1.0_merged.bin`
+5. Choose **Custom Flash** and select `WiFuxx_v2.1.1_merged.bin`
 6. Set the flash address to `0x0`
 7. Click **Flash** and wait for it to complete
 8. Press the reset button on the XIAO — WiFuxx will boot immediately

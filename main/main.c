@@ -794,6 +794,14 @@ static bool start_multi_band_attack(void) {
 }
 
 // ==================== Scan and Filter ====================
+// Sort scan results strongest-first so the limited MAX_TARGETS slots always go to
+// the loudest APs rather than whatever order the driver returned them in.
+static int cmp_ap_rssi_desc(const void *a, const void *b) {
+    int ra = ((const wifi_ap_record_t *)a)->rssi;
+    int rb = ((const wifi_ap_record_t *)b)->rssi;
+    return (rb > ra) - (rb < ra);
+}
+
 static uint16_t scan_and_filter_targets(void) {
     wifi_scan_config_t scan_config = {
         .ssid        = 0,
@@ -817,6 +825,9 @@ static uint16_t scan_and_filter_targets(void) {
     wifi_ap_record_t *ap_info = calloc(ap_num, sizeof(wifi_ap_record_t));
     if (!ap_info) return 0;
     esp_wifi_scan_get_ap_records(&ap_num, ap_info);
+
+    // Strongest-first: the MAX_TARGETS cap then takes the loudest APs above threshold.
+    qsort(ap_info, ap_num, sizeof(wifi_ap_record_t), cmp_ap_rssi_desc);
 
     auto_targets.count = 0;
     memset(&auto_targets.targets, 0, sizeof(auto_targets.targets));
@@ -1117,14 +1128,17 @@ static const char WEBUI_HTML[] =
 "<title>WiFuxx Control</title>\n"
 "<link rel='icon' type='image/x-icon' href='/favicon.ico'>\n"
 "<style>\n"
-":root{--bg:#000111;--mid:#1A1A1F;--card:#2A2D31;--yellow:#FFFF00;--orange:#FAA307;--cyan:#00FFFF;--muted:#9CA3AF;--red:#FF4444;}\n"
+// gallusgadgets.com brand palette. Legacy var names kept to avoid churning every
+// reference: --yellow is now warm body text, --cyan is the burnt-orange alt-brand
+// accent, --orange is brand orange, --red is kept for destructive actions only.
+":root{--bg:#15151B;--mid:#15151B;--card:#1C1C24;--border:#2C2C35;--yellow:#C8C3BB;--orange:#E8900A;--cyan:#C45C12;--muted:#8C857B;--red:#FF4444;}\n"
 "*{box-sizing:border-box;margin:0;padding:0;}\n"
 "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--yellow);min-height:100vh;padding-bottom:2rem;}\n"
 "header{background:var(--bg);padding:1rem 1.25rem;border-bottom:2px solid var(--orange);position:sticky;top:0;z-index:10;}\n"
 "header h1{color:var(--orange);font-size:1.6rem;letter-spacing:.05em;}\n"
 "header p{color:var(--muted);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;margin-top:.2rem;}\n"
 "main{max-width:540px;margin:0 auto;padding:1rem .75rem;display:flex;flex-direction:column;gap:1rem;}\n"
-".card{background:var(--card);border-radius:10px;padding:1rem 1.25rem;border:1px solid #3a3d42;}\n"
+".card{background:var(--card);border-radius:10px;padding:1rem 1.25rem;border:1px solid var(--border);}\n"
 ".card h2{color:var(--orange);font-size:.85rem;letter-spacing:.1em;text-transform:uppercase;margin-bottom:.9rem;}\n"
 ".btn{display:block;width:100%;padding:.75rem 1rem;border-radius:7px;font-size:.95rem;font-weight:700;letter-spacing:.06em;cursor:pointer;border:2px solid transparent;background:var(--mid);color:var(--yellow);}\n"
 ".btn:active{transform:scale(.98);}\n"
@@ -1135,12 +1149,12 @@ static const char WEBUI_HTML[] =
 ".scan-row .btn{width:auto;padding:.6rem 1.2rem;flex-shrink:0;}\n"
 "#scanmsg{font-size:.8rem;color:var(--muted);}\n"
 "#netlist{display:flex;flex-direction:column;gap:.6rem;}\n"
-".net{background:var(--mid);border-radius:8px;border:1px solid #3a3d42;overflow:hidden;}\n"
+".net{background:var(--mid);border-radius:8px;border:1px solid var(--border);overflow:hidden;}\n"
 ".net-head{display:flex;align-items:center;gap:.5rem;padding:.6rem .9rem;}\n"
 ".net-ssid{flex:1;color:var(--yellow);font-weight:600;font-size:.9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}\n"
 ".badge{font-size:.65rem;font-weight:700;padding:.15rem .4rem;border-radius:4px;}\n"
-".b24{background:rgba(0,255,255,.15);color:var(--cyan);border:1px solid var(--cyan);}\n"
-".b5{background:rgba(250,163,7,.15);color:var(--orange);border:1px solid var(--orange);}\n"
+".b24{background:rgba(196,92,18,.15);color:var(--cyan);border:1px solid var(--cyan);}\n"
+".b5{background:rgba(232,144,10,.15);color:var(--orange);border:1px solid var(--orange);}\n"
 ".dual{padding:0 .9rem .6rem;}\n"
 ".btn-dual{width:100%;padding:.45rem;font-size:.72rem;font-weight:700;border-radius:5px;border:1px solid var(--orange);background:transparent;color:var(--orange);cursor:pointer;}\n"
 ".bssid{display:flex;align-items:center;gap:.5rem;padding:.45rem .9rem;font-size:.75rem;border-top:1px solid rgba(255,255,255,.05);}\n"
@@ -1155,7 +1169,7 @@ static const char WEBUI_HTML[] =
 "footer{text-align:center;color:var(--muted);font-family:monospace;font-size:.7rem;letter-spacing:.05em;padding:1.25rem .75rem 0;}\n"
 "footer .gg{color:var(--orange);}\n"
 "label{display:block;font-size:.75rem;color:var(--muted);margin-bottom:.7rem;letter-spacing:.03em;}\n"
-"label input{display:block;width:100%;margin-top:.3rem;padding:.5rem .6rem;background:var(--mid);border:1px solid #3a3d42;border-radius:6px;color:var(--yellow);font-size:.9rem;}\n"
+"label input{display:block;width:100%;margin-top:.3rem;padding:.5rem .6rem;background:var(--mid);border:1px solid var(--border);border-radius:6px;color:var(--yellow);font-size:.9rem;}\n"
 ".chk{display:flex;align-items:center;gap:.5rem;margin:.2rem 0 1rem;}\n"
 ".chk input{width:auto;margin:0;}\n"
 "#cfgsave{margin-top:.2rem;}\n"

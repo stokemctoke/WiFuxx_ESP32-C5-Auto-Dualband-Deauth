@@ -65,6 +65,19 @@ static const char *TAG = "WiFuxx";
 #define BUTTON_HOLD_MS     2000
 #define BUTTON_RESET_HOLD_MS 10000   // WebUI mode: hold this long to factory-reset (lockout escape)
 #define BUTTON_POLL_MS     20
+
+// Battery sense — the XIAO ESP32-C5 has a built-in /2 divider on GPIO6 (ADC1 ch5),
+// gated by GPIO26 (drive high to enable). No external parts needed. (The bare
+// DevKit has no battery circuit; charge mode there just reads ~nothing.)
+#define BATTERY_ADC_GPIO       GPIO_NUM_6     // BAT_VOLT_PIN
+#define BATTERY_EN_GPIO        GPIO_NUM_26    // BAT_VOLT_PIN_EN — high enables the divider
+#define BATTERY_DIVIDER_RATIO  2              // equal resistors -> battery = node * 2
+#define BATTERY_FULL_MV        4200           // 100%
+#define BATTERY_EMPTY_MV       3300           // 0%
+#define BATTERY_SAMPLES        16             // raw reads averaged per update
+#define BATTERY_EMA_DEN        8              // smoothing: new = old + (sample-old)/N
+#define BATTERY_PRESENT_MIN_MV 2500           // below this we assume no battery/divider
+#define CHARGE_UPDATE_SEC      30             // charge-mode wake interval to refresh the readout
 // =======================================================
 
 // ==================== Boot Mode (persisted across esp_restart in RTC memory) ====================
@@ -75,6 +88,7 @@ static const char *TAG = "WiFuxx";
 #define BOOT_MODE_MAGIC    0x57463232u   // 'WF22'
 #define BOOT_MODE_ATTACK   0u
 #define BOOT_MODE_WEBUI    1u
+#define BOOT_MODE_CHARGE   2u            // low-power: Wi-Fi off, just charge the battery
 #define SEL_MODE_ALL       0u            // attack all targets above threshold (autonomous default)
 #define SEL_MODE_SINGLE    1u            // attack only g_sel_mac (ignores threshold)
 #define SEL_MODE_DUALBAND  2u            // attack every BSSID of g_sel_ssid, both bands (ignores threshold)
@@ -563,8 +577,9 @@ static void boot_mode_init(void) {
         memset(g_sel_mac, 0, sizeof(g_sel_mac));
         g_sel_ssid[0] = '\0';
     }
-    ESP_LOGI(TAG, "Boot mode: %s (reset reason %d)",
-             g_boot_mode == BOOT_MODE_WEBUI ? "WEBUI" : "ATTACK", (int)reason);
+    const char *mode_name = g_boot_mode == BOOT_MODE_WEBUI  ? "WEBUI"
+                          : g_boot_mode == BOOT_MODE_CHARGE ? "CHARGE" : "ATTACK";
+    ESP_LOGI(TAG, "Boot mode: %s (reset reason %d)", mode_name, (int)reason);
 }
 
 // Persist the next-boot mode and reset into it. Wi-Fi/HTTP/promiscuous teardown
@@ -573,7 +588,8 @@ static void boot_mode_init(void) {
 static void reboot_into(uint32_t mode) {
     g_boot_magic = BOOT_MODE_MAGIC;
     g_boot_mode  = mode;
-    ESP_LOGW(TAG, "Rebooting into %s mode", mode == BOOT_MODE_WEBUI ? "WEBUI" : "ATTACK");
+    ESP_LOGW(TAG, "Rebooting into %s mode",
+             mode == BOOT_MODE_WEBUI ? "WEBUI" : mode == BOOT_MODE_CHARGE ? "CHARGE" : "ATTACK");
     vTaskDelay(pdMS_TO_TICKS(150));  // let any in-flight HTTP response / log flush
     esp_restart();
 }
@@ -1180,6 +1196,7 @@ static const char WEBUI_HTML[] =
 "<div class='card'><h2>Scan</h2><div class='scan-row'><button class='btn btn-cyan' id='scan'>SCAN</button><span id='scanmsg'>Tap SCAN to discover networks.</span></div></div>\n"
 "<div class='card'><h2>Attack</h2><button class='btn btn-orange' id='all'>DEAUTH ALL</button></div>\n"
 "<div class='card'><h2>Networks</h2><div id='netlist'><p class='empty'>No scan yet.</p></div></div>\n"
+"<div class='card'><h2>Power</h2><button class='btn btn-cyan' id='charge'>CHARGE MODE</button></div>\n"
 "<div class='card'><h2>Settings</h2>\n"
 "<label>AP SSID<input id='ap_ssid' maxlength='32'></label>\n"
 "<label>AP channel (1-13)<input id='ap_channel' type='number' min='1' max='13'></label>\n"
@@ -1237,6 +1254,11 @@ static const char WEBUI_HTML[] =
 "  const t=e.target;\n"
 "  if(t.dataset.mac)attack({mode:'single',mac:t.dataset.mac});\n"
 "  else if(t.dataset.ssid)attack({mode:'dualband',ssid:t.dataset.ssid});\n"
+"};\n"
+"document.getElementById('charge').onclick=()=>{\n"
+"  if(!confirm('Enter Charge Mode? Wi-Fi turns off and the unit charges quietly. Unplug when the XIAO charge LED goes out; use the power switch to run it again.'))return;\n"
+"  toast('Charge mode \\u2014 Wi-Fi off. Unplug when the XIAO C LED goes out.');\n"
+"  fetch('/charge',{method:'POST'}).catch(()=>{});\n"
 "};\n"
 "const $=id=>document.getElementById(id);\n"
 "function loadCfg(){fetch('/config').then(r=>r.json()).then(c=>{\n"
@@ -1510,13 +1532,24 @@ static esp_err_t config_reset_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+// POST /charge — reboot into low-power CHARGE mode (Wi-Fi off). Leaving it is the
+// board's power switch, so there's no in-band way back; the UI confirms first.
+static esp_err_t charge_post_handler(httpd_req_t *req) {
+    if (!webui_authorized(req)) return ESP_OK;
+    ESP_LOGW(TAG, "WebUI charge request -> reboot into CHARGE");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    reboot_into(BOOT_MODE_CHARGE);  // short delay (response flush) then esp_restart()
+    return ESP_OK;                  // not reached
+}
+
 // ==================== WebUI: HTTP Server ====================
 static httpd_handle_t http_server = NULL;
 
 static void http_server_start(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_open_sockets = 7;    // LWIP cap: httpd reserves 3, so 7 is the safe max
-    config.max_uri_handlers = 12;   // we register 7; headroom for future routes
+    config.max_uri_handlers = 12;   // we register 8; headroom for future routes
     config.task_priority    = 4;
     config.stack_size       = 8192;
     config.lru_purge_enable = true;
@@ -1534,6 +1567,7 @@ static void http_server_start(void) {
         { .uri = "/config",       .method = HTTP_GET,  .handler = config_get_handler  },
         { .uri = "/config",       .method = HTTP_POST, .handler = config_post_handler },
         { .uri = "/config/reset", .method = HTTP_POST, .handler = config_reset_handler },
+        { .uri = "/charge",       .method = HTTP_POST, .handler = charge_post_handler },
     };
     for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++)
         httpd_register_uri_handler(http_server, &uris[i]);
@@ -1683,6 +1717,112 @@ static void log_boot_splash(void) {
     }
 }
 
+// ==================== Battery Sense + Charge Mode ====================
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
+#include "esp_sleep.h"
+
+static adc_oneshot_unit_handle_t batt_adc  = NULL;
+static adc_cali_handle_t         batt_cali = NULL;
+static adc_channel_t             batt_chan;
+static int  batt_mv    = 0;       // smoothed battery millivolts
+static bool batt_valid = false;
+
+static void battery_init(void) {
+    // GPIO26 enables the XIAO's on-board divider; keep it low until we sample.
+    gpio_config_t en = { .pin_bit_mask = 1ULL << BATTERY_EN_GPIO, .mode = GPIO_MODE_OUTPUT };
+    gpio_config(&en);
+    gpio_set_level(BATTERY_EN_GPIO, 0);
+
+    adc_unit_t unit;
+    if (adc_oneshot_io_to_channel(BATTERY_ADC_GPIO, &unit, &batt_chan) != ESP_OK || unit != ADC_UNIT_1) {
+        ESP_LOGE(TAG, "Battery: GPIO%d is not an ADC1 pin", BATTERY_ADC_GPIO);
+        return;
+    }
+    adc_oneshot_unit_init_cfg_t ucfg = { .unit_id = ADC_UNIT_1 };
+    if (adc_oneshot_new_unit(&ucfg, &batt_adc) != ESP_OK) { batt_adc = NULL; return; }
+
+    adc_oneshot_chan_cfg_t ccfg = { .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_DEFAULT };
+    adc_oneshot_config_channel(batt_adc, batt_chan, &ccfg);
+
+    adc_cali_curve_fitting_config_t cal = {
+        .unit_id = ADC_UNIT_1, .chan = batt_chan,
+        .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    if (adc_cali_create_scheme_curve_fitting(&cal, &batt_cali) != ESP_OK) {
+        ESP_LOGW(TAG, "Battery: ADC calibration unavailable; readings approximate");
+        batt_cali = NULL;
+    }
+    ESP_LOGI(TAG, "Battery sense on GPIO%d (ADC1 ch%d), enable GPIO%d",
+             BATTERY_ADC_GPIO, (int)batt_chan, BATTERY_EN_GPIO);
+}
+
+// Enable the divider, average a burst, convert to mV, undo the /2, low-pass with
+// an EMA, then disable the divider again to stop its drain.
+static void battery_update(void) {
+    if (!batt_adc) return;
+    gpio_set_level(BATTERY_EN_GPIO, 1);
+    vTaskDelay(pdMS_TO_TICKS(20));   // let the RC divider settle
+
+    int acc = 0, n = 0, raw;
+    for (int i = 0; i < BATTERY_SAMPLES; i++)
+        if (adc_oneshot_read(batt_adc, batt_chan, &raw) == ESP_OK) { acc += raw; n++; }
+
+    gpio_set_level(BATTERY_EN_GPIO, 0);
+    if (n == 0) return;
+
+    int raw_avg = acc / n, mv_node;
+    if (batt_cali) {
+        if (adc_cali_raw_to_voltage(batt_cali, raw_avg, &mv_node) != ESP_OK) return;
+    } else {
+        mv_node = raw_avg * 3300 / 4095;   // rough fallback if uncalibrated
+    }
+    int sample_mv = mv_node * BATTERY_DIVIDER_RATIO;
+    batt_mv = batt_valid ? batt_mv + (sample_mv - batt_mv) / BATTERY_EMA_DEN : sample_mv;
+    batt_valid = true;
+}
+
+static int battery_percent(void) {
+    int p = (batt_mv - BATTERY_EMPTY_MV) * 100 / (BATTERY_FULL_MV - BATTERY_EMPTY_MV);
+    return p < 0 ? 0 : (p > 100 ? 100 : p);
+}
+
+// Charge mode: never starts Wi-Fi. Shows a one-line battery readout, then light-
+// sleeps between refreshes so the SGM40567 charger gets nearly all the current.
+// Exit is the board's power switch (off to store; on = cold boot -> autonomous).
+static void charge_mode_run(void) {
+    ESP_LOGW(TAG, "CHARGE mode: Wi-Fi off. Unplug when the XIAO 'C' LED goes out.");
+    battery_init();
+    oled_clear_screen();
+    esp_sleep_enable_timer_wakeup((uint64_t)CHARGE_UPDATE_SEC * 1000000ULL);
+
+    char line[17];
+    while (1) {
+        battery_update();
+
+        oled_clear_page(0); oled_draw_string(0, 0, "CHARGE MODE");
+        oled_clear_page(2);
+        if (batt_valid && batt_mv >= BATTERY_PRESENT_MIN_MV) {
+            int v10 = batt_mv / 10;                 // centivolts
+            if (v10 < 0)   v10 = 0;
+            if (v10 > 999) v10 = 999;               // clamp -> 0.00..9.99 V
+            int pct = battery_percent();
+            if (pct < 0)   pct = 0;
+            if (pct > 100) pct = 100;
+            snprintf(line, sizeof(line), "Batt %d.%02dV %d%%", v10 / 100, v10 % 100, pct);
+        } else {
+            snprintf(line, sizeof(line), "Charging...");
+        }
+        oled_draw_string(0, 2, line);
+        oled_clear_page(4); oled_draw_string(0, 4, "Unplug at C LED");
+        oled_clear_page(5); oled_draw_string(0, 5, "going out.");
+        oled_flush();
+
+        esp_light_sleep_start();   // ~CHARGE_UPDATE_SEC; OLED holds the line meanwhile
+    }
+}
+
 // ==================== Main ====================
 void app_main(void) {
     boot_mode_init();   // pick ATTACK (default) or WEBUI from persisted RTC state
@@ -1706,6 +1846,11 @@ void app_main(void) {
     // Common peripherals
     oled_init();
     display_mutex = xSemaphoreCreateMutex();
+
+    if (g_boot_mode == BOOT_MODE_CHARGE) {
+        // -------- Charge mode: Wi-Fi off, low power, battery readout --------
+        charge_mode_run();   // never returns (power switch / cold boot to leave)
+    }
 
     if (g_boot_mode == BOOT_MODE_WEBUI) {
         // -------- WebUI mode: SoftAP + HTTP control panel, no attack --------

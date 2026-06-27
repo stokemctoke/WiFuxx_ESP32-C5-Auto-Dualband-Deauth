@@ -133,6 +133,9 @@ Unplug USB. Power-on always restarts in automatic mode.
 - **No on-screen hints.** On a screenless DevKit the LED and this guide are your only
   cues — there's no OLED prompting you to "connect to WiFuxx-Control". Bookmark
   `http://wifuxx.local`.
+- **Charge Mode is XIAO-only.** The web panel's **CHARGE MODE** button is for the
+  battery-powered XIAO build. The bare DevKit has no battery or charger, so it just
+  shows "Charging…" and you'd have to power-cycle to leave — ignore it on a DevKit.
 - **Don't hold the RESET (RST-labeled) button while powering on / resetting** unless you
   *want* firmware-update (download) mode — the app won't run. Just power-cycle without
   touching it.

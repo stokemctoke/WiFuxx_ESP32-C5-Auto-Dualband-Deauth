@@ -78,6 +78,7 @@ static const char *TAG = "WiFuxx";
 #define BATTERY_EMA_DEN        8              // smoothing: new = old + (sample-old)/N
 #define BATTERY_PRESENT_MIN_MV 2500           // below this we assume no battery/divider
 #define CHARGE_UPDATE_SEC      30             // charge-mode wake interval to refresh the readout
+#define CHARGE_OLED_CONTRAST   0x80           // ~50% — dim the panel in charge mode to save power
 // =======================================================
 
 // ==================== Boot Mode (persisted across esp_restart in RTC memory) ====================
@@ -1795,6 +1796,7 @@ static void charge_mode_run(void) {
     ESP_LOGW(TAG, "CHARGE mode: Wi-Fi off. Unplug when the XIAO 'C' LED goes out.");
     battery_init();
     oled_clear_screen();
+    oled_set_contrast(CHARGE_OLED_CONTRAST);   // dim the panel — every mA helps the charge
     esp_sleep_enable_timer_wakeup((uint64_t)CHARGE_UPDATE_SEC * 1000000ULL);
 
     char line[17];
@@ -1804,7 +1806,8 @@ static void charge_mode_run(void) {
         batt_valid = false;
         battery_update();
 
-        oled_clear_page(0); oled_draw_string(0, 0, "CHARGE MODE");
+        // Single dim line — fewest lit pixels = least OLED draw. The XIAO 'C' LED
+        // is the real charge indicator (out = full).
         oled_clear_page(2);
         if (batt_valid && batt_mv >= BATTERY_PRESENT_MIN_MV) {
             int v10 = batt_mv / 10;                 // centivolts
@@ -1818,8 +1821,6 @@ static void charge_mode_run(void) {
             snprintf(line, sizeof(line), "Charging...");
         }
         oled_draw_string(0, 2, line);
-        oled_clear_page(4); oled_draw_string(0, 4, "Unplug at C LED");
-        oled_clear_page(5); oled_draw_string(0, 5, "going out.");
         oled_flush();
 
         esp_light_sleep_start();   // ~CHARGE_UPDATE_SEC; OLED holds the line meanwhile

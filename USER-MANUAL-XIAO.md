@@ -154,7 +154,7 @@ the mode (it is not two physical screens):
 
 **Attack Mode layout:**
 ```
->> PRO DEAUTHER     <- title
+>> DEAUTHER    [==] <- title + battery level (top-right)
 2.4G:4 5G:3         <- how many networks found per band
 ATK 42s             <- currently attacking, 42 seconds in
 NETGEAR_123         <- list of networks being targeted
@@ -162,6 +162,9 @@ BT-Hub_456              (scrolls if there are more than 5)
 Starlink_789
 ...
 ```
+
+The small **battery icon** at the top-right shows your charge level and fills as
+the battery charges. (It appears only on the battery-powered XIAO build.)
 
 **Control Mode layout:**
 ```

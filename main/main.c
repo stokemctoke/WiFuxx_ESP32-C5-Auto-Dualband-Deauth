@@ -1033,6 +1033,10 @@ static void autonomous_mode_task(void *pvParameters) {
     }
 }
 
+// Battery sense — defined later (near app_main); also drawn live on the display.
+static void battery_update(void);
+static void battery_draw_glyph(uint8_t x0, uint8_t page);
+
 // ==================== Display Task ====================
 static void display_task(void *pvParameters) {
     display_info_t info;
@@ -1076,7 +1080,12 @@ static void display_task(void *pvParameters) {
         }
 
         oled_clear_page(0);
-        oled_draw_string(0, 0, ">> PRO DEAUTHER");
+        oled_draw_string(0, 0, ">> DEAUTHER");
+        // Live battery glyph, top-right — refresh the reading every few seconds.
+        static uint32_t last_batt_s = 0;
+        uint32_t now_s = get_time_sec();
+        if (last_batt_s == 0 || now_s - last_batt_s >= 5) { battery_update(); last_batt_s = now_s; }
+        battery_draw_glyph(113, 0);
 
         oled_clear_page(1);
         snprintf(line_buf, sizeof(line_buf), "2.4G:%d 5G:%d", info.ap_count_24, info.ap_count_5);
@@ -1784,9 +1793,45 @@ static void battery_update(void) {
     batt_valid = true;
 }
 
+// Approximate single-cell LiPo resting-voltage -> state-of-charge curve. The top
+// is nudged so a freshly-charged cell (~4.1 V at rest) reads near full. Voltage
+// fuel-gauging is an estimate — it sags under the deauth TX bursts, which the EMA
+// rides out — but this tracks the real curve far better than a straight line.
+static const struct { uint16_t mv; uint8_t pct; } lipo_curve[] = {
+    {3270,0},{3600,5},{3700,12},{3730,20},{3750,28},{3770,34},{3790,40},
+    {3820,47},{3850,55},{3870,62},{3910,70},{3950,77},{3990,83},{4060,90},
+    {4110,94},{4160,98},{4200,100},
+};
+
 static int battery_percent(void) {
-    int p = (batt_mv - BATTERY_EMPTY_MV) * 100 / (BATTERY_FULL_MV - BATTERY_EMPTY_MV);
-    return p < 0 ? 0 : (p > 100 ? 100 : p);
+    const int n = sizeof(lipo_curve) / sizeof(lipo_curve[0]);
+    int mv = batt_mv;
+    if (mv <= lipo_curve[0].mv)     return 0;
+    if (mv >= lipo_curve[n - 1].mv) return 100;
+    for (int i = 1; i < n; i++) {
+        if (mv < lipo_curve[i].mv) {
+            int lo_mv = lipo_curve[i - 1].mv, hi_mv = lipo_curve[i].mv;
+            int lo_p  = lipo_curve[i - 1].pct, hi_p = lipo_curve[i].pct;
+            return lo_p + (mv - lo_mv) * (hi_p - lo_p) / (hi_mv - lo_mv);
+        }
+    }
+    return 100;
+}
+
+// Draw a ~13x7 px battery icon at column x0 on `page`, fill proportional to %.
+// fb bytes are vertical 8-px columns (bit0 = top row). No-op when no battery is
+// present (e.g. a bare DevKit), so the glyph simply doesn't appear there.
+static void battery_draw_glyph(uint8_t x0, uint8_t page) {
+    if (!batt_valid || batt_mv < BATTERY_PRESENT_MIN_MV || x0 + 13 > 128) return;
+    for (uint8_t i = 0; i < 13; i++) fb[page][x0 + i] = 0;
+    fb[page][x0]      = 0x7F;                                   // left wall (rows 0-6)
+    fb[page][x0 + 10] = 0x7F;                                   // right wall
+    for (uint8_t i = 1; i < 10; i++) fb[page][x0 + i] |= 0x41;  // top + bottom edges
+    fb[page][x0 + 11] = 0x1C;                                   // terminal nub (rows 2-4)
+    fb[page][x0 + 12] = 0x1C;
+    int bars = (battery_percent() * 8 + 50) / 100;             // 0..8 inner columns
+    for (int i = 0; i < bars && i < 8; i++) fb[page][x0 + 2 + i] |= 0x3E;  // fill (rows 1-5)
+    page_dirty[page] = true;
 }
 
 // Charge mode: never starts Wi-Fi. Shows a one-line battery readout, then light-
@@ -1794,7 +1839,6 @@ static int battery_percent(void) {
 // Exit is the board's power switch (off to store; on = cold boot -> autonomous).
 static void charge_mode_run(void) {
     ESP_LOGW(TAG, "CHARGE mode: Wi-Fi off. Unplug when the XIAO 'C' LED goes out.");
-    battery_init();
     oled_clear_screen();
     oled_set_contrast(CHARGE_OLED_CONTRAST);   // dim the panel — every mA helps the charge
     esp_sleep_enable_timer_wakeup((uint64_t)CHARGE_UPDATE_SEC * 1000000ULL);
@@ -1850,6 +1894,7 @@ void app_main(void) {
     // Common peripherals
     oled_init();
     display_mutex = xSemaphoreCreateMutex();
+    battery_init();   // XIAO GPIO6/26 sense — used by charge mode + the live display glyph
 
     if (g_boot_mode == BOOT_MODE_CHARGE) {
         // -------- Charge mode: Wi-Fi off, low power, battery readout --------

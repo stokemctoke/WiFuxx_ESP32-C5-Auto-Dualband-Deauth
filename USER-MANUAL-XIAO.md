@@ -83,13 +83,27 @@ WiFuxx is a small board (about **55 × 35 mm**) with everything built in:
 - **On / Off:** use the **power switch** on the bottom edge (centre).
 - **Battery:** WiFuxx runs from an internal rechargeable battery, so once charged
   you can use it anywhere. When the battery is empty it simply switches off.
-- **Charging:** recharge through the **USB-C port on the XIAO** (left side).
+- **Charging:** plug a USB-C cable into the **XIAO's USB-C port** (left side). The
+  small **red "C" LED on the XIAO** is your charge indicator:
+  - **Blinking** — charging in progress
+  - **Out** — fully charged (it may glow steadily for a few seconds first)
 
-> 📝 **Draft note — remove before printing:** the production board's charging isn't
-> finalised yet (the current test unit uses a separate charge module that is *not*
-> on the production PCB). Confirm the charging method and any charge indicator once
-> test boards arrive, then finalise this section. *(A dedicated Gallus Gadgets
-> charge module is planned for an upcoming project.)*
+  You can charge with the unit on or off, and it's safe to leave it plugged in —
+  it stops on its own when full and tops up again if needed.
+
+### Charge Mode (faster, cooler charging)
+
+For the quickest charge, use **Charge Mode**. It turns Wi-Fi off and drops the
+unit into a low-power state so almost all the power goes into the battery instead
+of running the radio. The screen shows a single dim line with the battery voltage
+and percentage.
+
+- **Turn it on:** open the web panel (Control Mode — see §8) and tap **CHARGE
+  MODE** under *Power*.
+- **Know when it's done:** watch the XIAO's red **C LED** — when it goes out, the
+  battery is full. Then unplug.
+- **Go back to normal:** flip the **power switch off and on** — WiFuxx restarts in
+  automatic Attack Mode.
 
 ---
 
@@ -117,14 +131,15 @@ The whole intro takes under ten seconds, then it gets to work on its own.
 
 ---
 
-## 5. The Two Modes
+## 5. The Modes
 
-WiFuxx is always in one of two modes:
+WiFuxx runs in one of these modes:
 
 | Mode | How you get there | What it does |
 |------|-------------------|--------------|
 | **Attack Mode** *(default)* | Automatic when switched on | Scans, then deauthenticates all strong nearby networks, forever. |
 | **Control Mode (WebUI)** | Hold **BOOT** for 2 s while running | Creates its own Wi-Fi hotspot + web page so you can scan and pick specific targets. |
+| **Charge Mode** | Tap **CHARGE MODE** in the web panel | Wi-Fi off, low-power charging with a battery readout. Leave it until the XIAO's C LED goes out (see §3). |
 
 Switching modes restarts the device (this is normal — it takes a couple of
 seconds). **Switching the power off and on always returns it to automatic Attack
@@ -218,6 +233,10 @@ hotspot disappears because the device is now attacking.)
 **To return to fully automatic mode without choosing a target:** switch the power
 off and back on — it always starts in Attack Mode.
 
+> 🔋 **Charging instead?** The **Power** card has a **CHARGE MODE** button. It puts
+> WiFuxx into low-power charging (Wi-Fi off) with a battery readout on screen — see
+> §3. To leave Charge Mode, switch the power off and on.
+
 ---
 
 ## 9. Settings — Personalise WiFuxx
@@ -250,7 +269,8 @@ everything to factory settings.
 |--------|--------|
 | Hold **BOOT** (on the XIAO) ~2 s *while running* | Opens Control Mode (web panel) |
 | Hold **BOOT** ~10 s *while in Control Mode* | Factory-reset (wipes settings + login) |
-| **Power switch** off → on | Restarts in automatic Attack Mode |
+| Web panel → **Power → CHARGE MODE** | Low-power charging; unplug when the XIAO C LED goes out |
+| **Power switch** off → on | Restarts in automatic Attack Mode (also exits Charge Mode) |
 
 > **Important:** Do **not** hold the BOOT button *while switching the unit on*. On
 > this hardware that makes it start in firmware-update ("flashing") mode and the
@@ -274,6 +294,7 @@ everything to factory settings.
 | **Phone keeps dropping the WiFuxx-Control connection** | It's an internet-less network; tell your phone to stay connected to it. |
 | **Scan shows few or no networks** | Move closer to your target and tap **SCAN** again. Hidden or very weak networks may not appear. |
 | **A device won't disconnect during a test** | Some modern routers and phones resist deauthentication (a protection called PMF/802.11w). 5 GHz also has shorter range — move closer. This is a property of the target, not a fault in WiFuxx. |
+| **Screen shows "CHARGE MODE" / one dim line** | It's in Charge Mode — low-power charging started from the web panel. Unplug when the XIAO C LED goes out, then switch off and on to use it normally. |
 | **How do I stop everything?** | Switch it off. |
 | **How do I reset to normal?** | Switch off and on — it always starts in automatic Attack Mode. |
 

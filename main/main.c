@@ -1799,6 +1799,9 @@ static void charge_mode_run(void) {
 
     char line[17];
     while (1) {
+        // Wi-Fi is off here, so there's no TX sag to smooth — reset the EMA each
+        // pass so the readout tracks the live battery voltage with no lag.
+        batt_valid = false;
         battery_update();
 
         oled_clear_page(0); oled_draw_string(0, 0, "CHARGE MODE");

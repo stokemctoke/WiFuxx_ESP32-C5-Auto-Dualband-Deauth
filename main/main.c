@@ -1772,8 +1772,10 @@ static void button_task(void *pvParameters) {
 }
 
 // ==================== BOOT Button: hold to factory-reset (WebUI mode) ====================
-// WebUI boot only. Short hold (2s) on release returns to autonomous attack; a long
-// hold (10s) on release factory-resets settings (lockout escape when login is set).
+// WebUI boot only. The button does nothing else here, so a long 10s hold is a
+// safe "lockout escape": if a user sets a WebUI password and forgets it, holding
+// BOOT wipes settings (incl. auth) back to defaults and reboots into a fresh,
+// open WebUI. Does not affect the 2s hold-to-enter-WebUI in ATTACK mode.
 static void webui_button_task(void *pvParameters) {
     gpio_config_t io = {
         .pin_bit_mask = 1ULL << BOOT_BUTTON_GPIO,
@@ -1784,28 +1786,22 @@ static void webui_button_task(void *pvParameters) {
     };
     gpio_config(&io);
 
-    ESP_LOGI(TAG, "webui_button_task watching GPIO%d — release after %ds for Auto, %ds for factory-reset.",
-             BOOT_BUTTON_GPIO, BUTTON_HOLD_MS / 1000, BUTTON_RESET_HOLD_MS / 1000);
+    ESP_LOGI(TAG, "webui_button_task watching GPIO%d — hold %ds to factory-reset.",
+             BOOT_BUTTON_GPIO, BUTTON_RESET_HOLD_MS / 1000);
 
     uint32_t held_ms = 0;
     while (1) {
         if (gpio_get_level(BOOT_BUTTON_GPIO) == 0) {   // active LOW = pressed
             held_ms += BUTTON_POLL_MS;
-        } else if (held_ms > 0) {
             if (held_ms >= BUTTON_RESET_HOLD_MS) {
                 ESP_LOGW(TAG, "BOOT held %lums in WebUI -> FACTORY RESET", (unsigned long)held_ms);
                 settings_reset();
-                g_webui_resetting = true;
-                vTaskDelay(pdMS_TO_TICKS(2500));
-                reboot_into(BOOT_MODE_WEBUI);
-            } else if (held_ms >= BUTTON_HOLD_MS) {
-                ESP_LOGW(TAG, "BOOT held %lums in WebUI -> AUTO ATTACK", (unsigned long)held_ms);
-                g_sel_mode = SEL_MODE_ALL;
-                memset(g_sel_mac, 0, sizeof(g_sel_mac));
-                g_sel_ssid[0] = '\0';
-                reboot_into(BOOT_MODE_ATTACK);
+                g_webui_resetting = true;            // display_task shows confirmation
+                vTaskDelay(pdMS_TO_TICKS(2500));     // let the user read it
+                reboot_into(BOOT_MODE_WEBUI);        // come back up fresh + open
             }
-            held_ms = 0;
+        } else {
+            held_ms = 0;   // released — require a clean continuous hold
         }
         vTaskDelay(pdMS_TO_TICKS(BUTTON_POLL_MS));
     }

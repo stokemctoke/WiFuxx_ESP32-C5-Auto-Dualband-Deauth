@@ -122,7 +122,7 @@ WiFuxx reboots and attacks your choice. Hold **RESET** again to reopen the panel
 
 ### Factory reset / lockout escape
 Set a WebUI login and forgot it? In Control Mode, **hold RESET (the RST-labeled button)
-for ~10 s, then release** — WiFuxx wipes all settings back to defaults and reboots.
+for ~10 s** — WiFuxx wipes all settings back to defaults and reboots.
 (Default AP SSID `WiFuxx-Control`, IP `192.168.42.42`.)
 
 ### Power off

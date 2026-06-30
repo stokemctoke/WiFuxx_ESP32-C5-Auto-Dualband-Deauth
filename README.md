@@ -126,7 +126,7 @@ This is the recommended flashing tool for the ESP32-C5. Many popular online flas
 > ```
 > ~/Github-Repos/
 >   esp-idf/                        ← toolchain
->   WiFuxx_C5-Auto-Dualband-Deauth/ ← this project
+>   WiFuxx_ESP32-C5-Auto-Dualband-Deauth/ ← this project
 > ```
 
 ### Step 1: Install ESP-IDF v5.5.1
@@ -147,7 +147,7 @@ cd esp-idf
 
 ```bash
 cd ~/Github-Repos
-git clone https://github.com/stokemctoke/WiFuxx_C5-Auto-Dualband-Deauth.git
+git clone https://github.com/stokemctoke/WiFuxx_ESP32-C5-Auto-Dualband-Deauth.git
 ```
 
 ### Step 3: Patch the WiFi Library
@@ -164,13 +164,13 @@ Remove the existing library file and replace it with the patched version:
 
 ```bash
 rm libnet80211.a
-cp ~/Github-Repos/WiFuxx_C5-Auto-Dualband-Deauth/patched_libnet/libnet80211.a .
+cp ~/Github-Repos/WiFuxx_ESP32-C5-Auto-Dualband-Deauth/patched_libnet/libnet80211.a .
 ```
 
 ### Step 4: Build and Flash
 
 ```bash
-cd ~/Github-Repos/WiFuxx_C5-Auto-Dualband-Deauth
+cd ~/Github-Repos/WiFuxx_ESP32-C5-Auto-Dualband-Deauth
 idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor
 ```

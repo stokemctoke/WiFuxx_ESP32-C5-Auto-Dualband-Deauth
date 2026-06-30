@@ -1,0 +1,24 @@
+name: Build Firmware
+
+on:
+  push:
+    branches: [master, Composer]
+  pull_request:
+    branches: [master, Composer]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build ESP32-C5 firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.1
+          target: esp32c5
+          command: |
+            cp "${GITHUB_WORKSPACE}/patched_libnet/libnet80211.a" \
+               "${IDF_PATH}/components/esp_wifi/lib/esp32c5/libnet80211.a"
+            idf.py build

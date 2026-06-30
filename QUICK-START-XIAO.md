@@ -20,9 +20,11 @@ To choose exactly what to test, open the web panel:
 2. On your phone, join the Wi-Fi network **`WiFuxx-Control`** *(no password)*.
 3. In a browser, open **`http://192.168.42.42`** (or **`http://wifuxx.local`**).
 4. Tap **SCAN**, then choose **DEAUTH** (one network), **DUAL-BAND SAME AP**, or
-   **DEAUTH ALL**. The **Settings** panel lets you tune and save options.
+   **DEAUTH ALL**. Use **AUTO MODE** (Power card) to return to hands-free scanning
+   without attacking. The **Settings** panel lets you tune and save options.
 
-It restarts and attacks your choice. Hold **BOOT** again to reopen the panel.
+It restarts and attacks your choice. Hold **BOOT** again to reopen the panel, or use
+**AUTO MODE** from the web panel to go back to autonomous operation.
 
 ### ③ Turn it off
 Slide the **power switch** to **OFF**.
@@ -33,7 +35,6 @@ Slide the **power switch** to **OFF**.
 > ⚠️ **Don't hold BOOT while switching on** — that starts firmware-update mode and
 > the screen stays blank. Just switch off and on again without touching BOOT.
 
-<!-- DRAFT: confirm charging method before printing — production charging not yet finalised -->
 *Recharge via the XIAO's USB-C port. Full instructions & troubleshooting are in
 the **WiFuxx User Manual**.*
 

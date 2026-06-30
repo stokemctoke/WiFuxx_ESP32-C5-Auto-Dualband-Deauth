@@ -113,15 +113,17 @@ To hand-pick targets or change settings, open the web panel:
 2. On your phone, join the Wi-Fi network **`WiFuxx-Control`** *(no password by default)*.
 3. In a browser, open **`http://192.168.42.42`** or **`http://wifuxx.local`**.
 4. Tap **SCAN**, then choose **DEAUTH** (one network), **DUAL-BAND SAME AP**, or **DEAUTH
-   ALL**. The **Settings** panel lets you tune thresholds, burst sizes, the AP name, an
+   ALL**. Use **AUTO MODE** under *Power* to return to hands-free operation without
+   attacking. The **Settings** panel lets you tune thresholds, burst sizes, the AP name, an
    optional login, and more — all saved across reboots (NVS).
 
-WiFuxx reboots and attacks your choice. Hold **RESET** again to reopen the panel.
+WiFuxx reboots and attacks your choice. Hold **RESET** again to reopen the panel, or use
+**AUTO MODE** from the web panel to go back to autonomous scanning.
 
 ### Factory reset / lockout escape
-Set a WebUI login and forgot it? In Control Mode, **hold RESET (the RST-labeled button) for ~10 s** — WiFuxx wipes
-all settings back to defaults and reboots. (Default AP SSID `WiFuxx-Control`, IP
-`192.168.42.42`.)
+Set a WebUI login and forgot it? In Control Mode, **hold RESET (the RST-labeled button)
+for ~10 s, then release** — WiFuxx wipes all settings back to defaults and reboots.
+(Default AP SSID `WiFuxx-Control`, IP `192.168.42.42`.)
 
 ### Power off
 Unplug USB. Power-on always restarts in automatic mode.
@@ -133,9 +135,9 @@ Unplug USB. Power-on always restarts in automatic mode.
 - **No on-screen hints.** On a screenless DevKit the LED and this guide are your only
   cues — there's no OLED prompting you to "connect to WiFuxx-Control". Bookmark
   `http://wifuxx.local`.
-- **Charge Mode is XIAO-only.** The web panel's **CHARGE MODE** button is for the
-  battery-powered XIAO build. The bare DevKit has no battery or charger, so it just
-  shows "Charging…" and you'd have to power-cycle to leave — ignore it on a DevKit.
+- **Charge Mode is XIAO-only.** The web panel hides **CHARGE MODE** when no battery
+  hardware is detected (e.g. on a bare DevKit). If you somehow enter Charge Mode
+  without a battery, power-cycle to leave.
 - **Don't hold the RESET (RST-labeled) button while powering on / resetting** unless you
   *want* firmware-update (download) mode — the app won't run. Just power-cycle without
   touching it.

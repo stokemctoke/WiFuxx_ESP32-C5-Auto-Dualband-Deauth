@@ -139,7 +139,11 @@ WiFuxx runs in one of these modes:
 |------|-------------------|--------------|
 | **Attack Mode** *(default)* | Automatic when switched on | Scans, then deauthenticates all strong nearby networks, forever. |
 | **Control Mode (WebUI)** | Hold **BOOT** for 2 s while running | Creates its own Wi-Fi hotspot + web page so you can scan and pick specific targets. |
-| **Charge Mode** | Tap **CHARGE MODE** in the web panel | Wi-Fi off, low-power charging with a battery readout. Leave it until the XIAO's C LED goes out (see §3). |
+| **Charge Mode** | Tap **CHARGE MODE** in the web panel *(XIAO only)* | Wi-Fi off, low-power charging. OLED shows **CHARGE MODE** plus a battery readout. Leave it until the XIAO's C LED goes out (see §3). |
+
+To leave Control Mode **without** starting an attack, tap **AUTO MODE** in the web
+panel, or hold **BOOT** for ~2 s and **release** (same as entering Control Mode from
+Attack Mode, but in reverse).
 
 Switching modes restarts the device (this is normal — it takes a couple of
 seconds). **Switching the power off and on always returns it to automatic Attack
@@ -261,8 +265,8 @@ everything to factory settings.
 
 > 🔑 **Locked yourself out?** If you set a login and forget it, you can't reach the
 > page to fix it — so there's a hardware escape: in Control Mode, **hold BOOT for
-> 10 seconds**. WiFuxx wipes all settings (including the login) back to defaults
-> and restarts into an open control panel.
+> ~10 seconds, then release**. WiFuxx wipes all settings (including the login) back
+> to defaults and restarts into an open control panel.
 
 ---
 
@@ -271,7 +275,9 @@ everything to factory settings.
 | Action | Result |
 |--------|--------|
 | Hold **BOOT** (on the XIAO) ~2 s *while running* | Opens Control Mode (web panel) |
-| Hold **BOOT** ~10 s *while in Control Mode* | Factory-reset (wipes settings + login) |
+| Hold **BOOT** ~2 s in Control Mode, then **release** | Returns to automatic Attack Mode |
+| Hold **BOOT** ~10 s in Control Mode, then **release** | Factory-reset (wipes settings + login) |
+| Web panel → **Power → AUTO MODE** | Returns to automatic Attack Mode (no attack command) |
 | Web panel → **Power → CHARGE MODE** | Low-power charging; unplug when the XIAO C LED goes out |
 | **Power switch** off → on | Restarts in automatic Attack Mode (also exits Charge Mode) |
 
@@ -293,7 +299,7 @@ everything to factory settings.
 | **Can't find the "WiFuxx-Control" Wi-Fi** | Confirm you're in Control Mode (the screen shows the connect info). Refresh your phone's Wi-Fi list. |
 | **Joined WiFuxx-Control but the page won't load** | Type the full address `http://192.168.42.42` (not `https`). On Android, turn off mobile data and "auto-switch to mobile network" so the phone stays on the device's hotspot. |
 | **`wifuxx.local` doesn't open** | Some Android phones don't support `.local` names — just use `http://192.168.42.42` instead. iPhones, Macs and most computers handle `wifuxx.local` fine. |
-| **Set a WebUI password and forgot it** | In Control Mode, hold **BOOT for 10 seconds** — WiFuxx factory-resets (wiping the login) and restarts into an open control panel. |
+| **Set a WebUI password and forgot it** | In Control Mode, hold **BOOT for ~10 seconds, then release** — WiFuxx factory-resets (wiping the login) and restarts into an open control panel. |
 | **Phone keeps dropping the WiFuxx-Control connection** | It's an internet-less network; tell your phone to stay connected to it. |
 | **Scan shows few or no networks** | Move closer to your target and tap **SCAN** again. Hidden or very weak networks may not appear. |
 | **A device won't disconnect during a test** | Some modern routers and phones resist deauthentication (a protection called PMF/802.11w). 5 GHz also has shorter range — move closer. This is a property of the target, not a fault in WiFuxx. |

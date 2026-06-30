@@ -12,4 +12,5 @@ idf_component_register(
         cjson
         mdns
         esp_adc
+        led_strip
 )

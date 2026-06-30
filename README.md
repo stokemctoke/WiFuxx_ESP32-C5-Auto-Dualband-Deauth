@@ -40,6 +40,8 @@
   - Per-band AP counts (2.4GHz / 5GHz)
   - Current status (IDLE / SCAN / ATTACK + elapsed time)
   - Scrolling list of target SSIDs
+  - Live battery icon (top-right, XIAO builds with battery pads)
+- **🔋 Battery Monitoring** — On-board LiPo sense via the XIAO battery pads (GPIO6/26), with a low-power **Charge Mode** reachable from the WebUI.
 - **🔫 Dual-Band Support** — Attacks both 2.4 GHz and 5 GHz networks simultaneously.
 - **🚀 High Performance** — Optimised channel-hopping with batch I2C display updates (~100x fewer I2C transactions vs naive approach).
 - **📝 Serial Logging** — Detailed logs via USB serial for debugging.

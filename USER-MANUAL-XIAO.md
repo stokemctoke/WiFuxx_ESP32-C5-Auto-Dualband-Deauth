@@ -144,6 +144,10 @@ WiFuxx runs in one of these modes:
 To leave Control Mode **without** starting an attack, tap **AUTO MODE** in the web
 panel (or power-cycle the unit).
 
+> 🕵️ **Hidden networks:** APs that don't broadcast a name still appear in the scan
+> list as **Hidden (MAC address)**. You can deauth them by MAC like any other network;
+> only the **DUAL-BAND SAME AP** shortcut is unavailable for them.
+
 Switching modes restarts the device (this is normal — it takes a couple of
 seconds). **Switching the power off and on always returns it to automatic Attack
 Mode.**
@@ -236,8 +240,8 @@ targeting your selection. (Your browser will show a "command sent" message; the
 hotspot disappears because the device is now attacking.)
 
 **To go back to the control panel:** hold **BOOT** for 2 seconds again.
-**To return to fully automatic mode without choosing a target:** switch the power
-off and back on — it always starts in Attack Mode.
+**To return to fully automatic mode without choosing a target:** tap **AUTO MODE**
+under *Power* in the web panel, or switch the power off and back on.
 
 > 🔋 **Charging instead?** The **Power** card has a **CHARGE MODE** button. It puts
 > WiFuxx into low-power charging (Wi-Fi off) with a battery readout on screen — see
@@ -299,7 +303,7 @@ everything to factory settings.
 | **`wifuxx.local` doesn't open** | Some Android phones don't support `.local` names — just use `http://192.168.42.42` instead. iPhones, Macs and most computers handle `wifuxx.local` fine. |
 | **Set a WebUI password and forgot it** | In Control Mode, hold **BOOT for 10 seconds** — WiFuxx factory-resets (wiping the login) and restarts into an open control panel. |
 | **Phone keeps dropping the WiFuxx-Control connection** | It's an internet-less network; tell your phone to stay connected to it. |
-| **Scan shows few or no networks** | Move closer to your target and tap **SCAN** again. Hidden or very weak networks may not appear. |
+| **Scan shows few or no networks** | Move closer to your target and tap **SCAN** again. Very weak networks may not appear. Hidden networks **do** show up — listed as **Hidden (MAC address)** since they broadcast no name. |
 | **A device won't disconnect during a test** | Some modern routers and phones resist deauthentication (a protection called PMF/802.11w). 5 GHz also has shorter range — move closer. This is a property of the target, not a fault in WiFuxx. |
 | **Screen shows "CHARGE MODE" / one dim line** | It's in Charge Mode — low-power charging started from the web panel. Unplug when the XIAO C LED goes out, then switch off and on to use it normally. |
 | **How do I stop everything?** | Switch it off. |

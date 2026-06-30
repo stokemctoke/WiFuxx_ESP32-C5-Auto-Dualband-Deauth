@@ -35,8 +35,8 @@ Slide the **power switch** to **OFF**.
 > ⚠️ **Don't hold BOOT while switching on** — that starts firmware-update mode and
 > the screen stays blank. Just switch off and on again without touching BOOT.
 
-*Recharge via the XIAO's USB-C port. Full instructions & troubleshooting are in
-the **WiFuxx User Manual**.*
+*Recharge via the XIAO's USB-C port. Full instructions & troubleshooting are in the
+**[XIAO User Manual](USER-MANUAL-XIAO.md)**.*
 
 ```
 >_ Gallus Gadgets // build. break. learn.

@@ -5,12 +5,15 @@
 
 # WiFuxx: ESP32-C5 Autonomous Dual-Band Deauth
 
-![image](WiFuxx_DualBand-Deauth-Firmware.jpg)
+**Current release:** [v2.3.1](https://github.com/stokemctoke/WiFuxx_ESP32-C5-Auto-Dualband-Deauth/releases/tag/v2.3.1) — AUTO MODE (return to autonomous from the WebUI), battery-hardware auto-detect (Charge Mode hidden on non-battery boards), always-on battery icon, LiPo charge curve, Charge Mode, WebUI settings (NVS), mDNS.
 
+![image](WiFuxx_DualBand-Deauth-Firmware.jpg)
 
 **WiFuxx** is a compact, autonomous deauthentication tool designed for the XIAO ESP32-C5. It scans for nearby Wi-Fi networks, filters by signal strength, and launches targeted deauth attacks indefinitely — all displayed on a tiny OLED screen. It runs hands-free by default, with an **optional phone-friendly web control panel** for hand-picking targets and tuning settings.
 
 > 🔌 **Running on a bare ESP32-C5-DevKitC-1 (no OLED)?** The same binary works there too — see the **[Dev-Kit User Manual](USER-MANUAL-DEVKIT.md)** for flashing and the onboard RGB-LED status guide.
+
+> 📦 **Gallus Gadgets XIAO build?** See **[Quick Start (XIAO)](QUICK-START-XIAO.md)** and the full **[XIAO User Manual](USER-MANUAL-XIAO.md)**.
 
 ---
 
@@ -34,6 +37,7 @@
 
 - **⚡ Autonomous by Default** — Power on and it scans, then attacks indefinitely. No app, no setup, no internet.
 - **📱 Optional Web Control Panel** — Hold **BOOT** for 2 s to reboot into a phone-friendly WebUI: scan and hand-pick a single AP, a network's 2.4 + 5 GHz pair, or everything. Reachable at `http://192.168.42.42` **or `http://wifuxx.local`** (mDNS). The radio is time-separated from the attack by a reboot, sidestepping the ESP32-C5's single-radio AP-vs-attack conflict.
+- **🔄 AUTO MODE** — A one-tap **Power → AUTO MODE** button in the WebUI reboots straight back into hands-free autonomous scanning, with no attack command issued.
 - **💾 Persistent Settings (NVS)** — Edit the AP name/channel, per-band RSSI thresholds, per-band burst sizes, an optional WebUI login, and the boot splash right from the panel — all saved across reboots. Forgot the login? Hold **BOOT for 10 s** in the panel to factory-reset.
 - **📊 Smart Targeting** — Separate signal thresholds per band: > -75 dBm (2.4GHz) and > -70 dBm (5GHz) by default.
 - **🖥️ OLED Display** — Real-time status on a 128×64 screen:
@@ -41,7 +45,7 @@
   - Current status (IDLE / SCAN / ATTACK + elapsed time)
   - Scrolling list of target SSIDs
   - Live battery icon (top-right, XIAO builds with battery pads)
-- **🔋 Battery Monitoring** — On-board LiPo sense via the XIAO battery pads (GPIO6/26), with a low-power **Charge Mode** reachable from the WebUI.
+- **🔋 Battery Monitoring** — On-board LiPo sense via the XIAO battery pads (GPIO6/26), with a low-power **Charge Mode** reachable from the WebUI. Battery hardware is auto-detected at boot, so **Charge Mode is hidden on boards without a battery** (e.g. a bare DevKit).
 - **🔫 Dual-Band Support** — Attacks both 2.4 GHz and 5 GHz networks simultaneously.
 - **🚀 High Performance** — Optimised channel-hopping with batch I2C display updates (~100x fewer I2C transactions vs naive approach).
 - **📝 Serial Logging** — Detailed logs via USB serial for debugging.
@@ -103,11 +107,11 @@ This is the recommended flashing tool for the ESP32-C5. Many popular online flas
 
 ### Steps
 
-1. Download `WiFuxx_v2.3.0_merged.bin` from the [Releases](https://github.com/stokemctoke/WiFuxx_ESP32-C5-Auto-Dualband-Deauth/releases) page
+1. Download **`WiFuxx_v2.3.1_merged.bin`** from the [Releases](https://github.com/stokemctoke/WiFuxx_ESP32-C5-Auto-Dualband-Deauth/releases) page (latest: **v2.3.1**)
 2. Open **ESPConnect** in a Chromium-based browser (Chrome, Edge — Firefox is not supported for WebSerial)
 3. Connect your XIAO ESP32-C5 via USB-C
 4. Click **Connect** and select your device from the port list
-5. Choose **Custom Flash** and select `WiFuxx_v2.3.0_merged.bin`
+5. Choose **Custom Flash** and select `WiFuxx_v2.3.1_merged.bin`
 6. Set the flash address to `0x0`
 7. Click **Flash** and wait for it to complete
 8. Press the reset button on the XIAO — WiFuxx will boot immediately
@@ -123,12 +127,13 @@ This is the recommended flashing tool for the ESP32-C5. Many popular online flas
 - XIAO ESP32-C5 board support
 - USB-C cable
 
-> **Directory structure:** Keep ESP-IDF (the toolchain) and WiFuxx (the project) in separate locations. The instructions below use `~/Github-Repos/` — that's just where I keep my repos. Clone them wherever makes sense for your setup, and adjust the paths accordingly.
+> **Directory structure:** Keep ESP-IDF (the toolchain) and WiFuxx (the project) in separate locations. Adjust paths to match your setup — for example:
 > 
 > ```
 > ~/Github-Repos/
->   esp-idf/                        ← toolchain
->   WiFuxx_ESP32-C5-Auto-Dualband-Deauth/ ← this project
+>   ESP32-Firmwares/
+>     ESP-IDF/ESP-IDF-5.5.1/          ← toolchain (your path may differ)
+>     ESP32-C5_WiFuxx_Auto-Dualband-Deauth/  ← this project
 > ```
 
 ### Step 1: Install ESP-IDF v5.5.1
@@ -156,23 +161,26 @@ git clone https://github.com/stokemctoke/WiFuxx_ESP32-C5-Auto-Dualband-Deauth.gi
 
 A patched version of the ESP32-C5 WiFi library is required for deauth functionality. The patch file is included in the `patched_libnet` folder of this repository.
 
-Navigate to the ESP32-C5 WiFi library directory inside your ESP-IDF installation:
+Navigate to the ESP32-C5 WiFi library directory inside your ESP-IDF installation (after running `. ./export.sh`, `$IDF_PATH` points at your install):
 
 ```bash
-cd ~/Github-Repos/esp-idf/components/esp_wifi/lib/esp32c5
+cd "$IDF_PATH/components/esp_wifi/lib/esp32c5"
 ```
 
 Remove the existing library file and replace it with the patched version:
 
 ```bash
 rm libnet80211.a
-cp ~/Github-Repos/WiFuxx_ESP32-C5-Auto-Dualband-Deauth/patched_libnet/libnet80211.a .
+cp /path/to/WiFuxx/patched_libnet/libnet80211.a .
 ```
+
+> Replace `/path/to/WiFuxx` with wherever you cloned this repo.
 
 ### Step 4: Build and Flash
 
 ```bash
-cd ~/Github-Repos/WiFuxx_ESP32-C5-Auto-Dualband-Deauth
+cd /path/to/WiFuxx
+. "$IDF_PATH/export.sh"    # if not already sourced in this shell
 idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
@@ -195,10 +203,10 @@ If no targets above the signal threshold are found on boot, the device waits 25 
 
 **Display status during each phase:**
 
-| Phase  | Display                                                      |
-| ------ | ------------------------------------------------------------ |
-| IDLE   | Waiting to rescan (only if no targets found)                 |
-| SCAN   | Scanning for networks, counting strong APs per band          |
+| Phase  | Display                                                           |
+| ------ | ----------------------------------------------------------------- |
+| IDLE   | Waiting to rescan (only if no targets found)                      |
+| SCAN   | Scanning for networks, counting strong APs per band               |
 | ATTACK | Actively deauthenticating targets (shows elapsed time in seconds) |
 
 ### Control Mode (Web Panel)
@@ -209,6 +217,7 @@ Hold **BOOT** for ~2 s while running and WiFuxx reboots into Control Mode: it br
 2. Browse to **`http://192.168.42.42`** or **`http://wifuxx.local`**.
 3. **SCAN**, then choose **DEAUTH** (one AP), **DUAL-BAND SAME AP**, or **DEAUTH ALL** — the device reboots into Attack Mode targeting your choice.
 4. The **Settings** card edits the AP name/channel, thresholds, burst sizes, an optional login, and the boot splash (saved to NVS), with a **Reset to defaults** button.
+5. Use **AUTO MODE** (Power card) to return to hands-free autonomous scanning without launching an attack. Use **CHARGE MODE** (XIAO with battery only) for low-power charging.
 
 > Set a WebUI login and forgot it? Hold **BOOT for 10 s** while in Control Mode to wipe settings back to defaults. Power-cycling always returns to automatic Attack Mode.
 
@@ -216,7 +225,7 @@ Hold **BOOT** for ~2 s while running and WiFuxx reboots into Control Mode: it br
 
 ```
 ┌────────────────────────────────┐
-│ >> PRO DEAUTHER                │  ← Title
+│ >> DEAUTHER           [==]     │  ← Title + battery icon (XIAO)
 │ 2.4G:4 5G:3                    │  ← Per-band AP counts
 │ ATK 42s                        │  ← Status + elapsed time
 │ NETGEAR_123                    │  ← Target 1 (scrolls if >5)
@@ -275,27 +284,41 @@ I (7685) WiFuxx:   5GHz:     2100 pkt (1050 pps) - 3 targets
 | OLED display blank  | Check wiring, especially SDA/SCL. Run an I2C scanner sketch to verify address.               |
 | No deauth effect    | Verify promiscuous mode is enabled — check serial for `"Failed to enable promiscuous mode"`. |
 | Device not scanning | Ensure Wi-Fi is initialised correctly — serial logs will show errors.                        |
-| Compilation errors  | Run `idf.py fullclean` and rebuild. Ensure ESP-IDF is v5.5.1.                                |
+| Compilation errors  | Run `idf.py fullclean` and rebuild. Ensure ESP-IDF is **v5.5.1** and the patched `libnet80211.a` is in place (see Installation). |
+| App partition overflow | The project uses the **large single-app** partition table (`partitions_singleapp_large.csv`) — required since v2.3.0. If you see `app partition is too small`, check `sdkconfig` has `CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y`. |
+| WebUI won't load  | Use `http://` not `https://`. On Android, disable mobile-data fallback so the phone stays on `WiFuxx-Control`. |
+| Locked out of WebUI | In Control Mode, hold **BOOT for 10 s** to factory-reset settings (including login). |
 
 ---
 
 ## 📈 Performance
 
-| Metric              | Value                                                |
-| ------------------- | ---------------------------------------------------- |
-| Packet rate         | ~2,500 packets/second (aggregate across all targets) |
-| Channel switch delay| 12 ms                                                |
-| Display update rate | 1 Hz (batch I2C flush, negligible CPU impact)        |
-| Memory usage        | ~50 KB heap, ~500 KB flash                           |
+| Metric               | Value                                                |
+| -------------------- | ---------------------------------------------------- |
+| Packet rate          | ~2,500 packets/second (aggregate across all targets) |
+| Channel switch delay | 12 ms                                                |
+| Display update rate  | 1 Hz (batch I2C flush, negligible CPU impact)        |
+| Memory usage         | ~50 KB heap, ~500 KB flash                           |
 
 ---
 
 ## 🔮 Future Ideas
 
-- Battery level monitoring (XIAO battery pads)
-- Battery icon on OLED
 - External antenna mod
 - 3D printed enclosure
+- Gallus Gadgets case for the XIAO build
+
+---
+
+## 📚 Documentation
+
+| Document | Audience |
+| -------- | -------- |
+| [README.md](README.md) | Developers — build, flash, wiring, operation |
+| [QUICK-START-XIAO.md](QUICK-START-XIAO.md) | Gallus Gadgets XIAO owners — one-page getting started |
+| [USER-MANUAL-XIAO.md](USER-MANUAL-XIAO.md) | Gallus Gadgets XIAO owners — full manual |
+| [USER-MANUAL-DEVKIT.md](USER-MANUAL-DEVKIT.md) | Bare ESP32-C5-DevKitC-1 users — RGB LED guide |
+| [BATTERY-METER-WIRING.md](BATTERY-METER-WIRING.md) | Custom hardware — external ADC divider (superseded on XIAO) |
 
 ---
 
@@ -324,4 +347,4 @@ MIT Licence — see the [LICENSE](LICENSE) file for details.
 
 ---
 
->> ***WiFuxx:** Because sometimes you just need to fuxx about (with your own network)* 😉
+> > ***WiFuxx:** Because sometimes you just need to fuxx about (with your own network)* 😉

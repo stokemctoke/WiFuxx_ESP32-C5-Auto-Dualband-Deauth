@@ -1,0 +1,2 @@
+# Lock release build settings — prevents idf.py from flipping to Debug on reconfigure.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y

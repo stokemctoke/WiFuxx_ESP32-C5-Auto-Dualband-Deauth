@@ -5,7 +5,7 @@
 
 # WiFuxx: ESP32-C5 Autonomous Dual-Band Deauth
 
-**Current release:** [v2.3.1](https://github.com/stokemctoke/WiFuxx_ESP32-C5-Auto-Dualband-Deauth/releases/tag/v2.3.1) — AUTO MODE (return to autonomous from the WebUI), battery-hardware auto-detect (Charge Mode hidden on non-battery boards), always-on battery icon, LiPo charge curve, Charge Mode, WebUI settings (NVS), mDNS.
+**Current release:** [v2.4.1](https://github.com/stokemctoke/WiFuxx_ESP32-C5-Auto-Dualband-Deauth/releases/tag/v2.4.1) — **over-the-air updates**: check for and install new firmware straight from the WebUI over your home Wi-Fi, on a dual-OTA partition layout that rolls back a failed update. Plus a Gallus Gadgets logo splash. Builds on v2.3.x — AUTO MODE, battery-hardware auto-detect (Charge Mode hidden on non-battery boards), always-on battery icon, LiPo charge curve, Charge Mode, WebUI settings (NVS), mDNS.
 
 ![image](WiFuxx_DualBand-Deauth-Firmware.jpg)
 
@@ -108,11 +108,11 @@ This is the recommended flashing tool for the ESP32-C5. Many popular online flas
 
 ### Steps
 
-1. Download **`WiFuxx_v2.3.1_merged.bin`** from the [Releases](https://github.com/stokemctoke/WiFuxx_ESP32-C5-Auto-Dualband-Deauth/releases) page (latest: **v2.3.1**)
+1. Download **`WiFuxx_v2.4.1_merged.bin`** from the [Releases](https://github.com/stokemctoke/WiFuxx_ESP32-C5-Auto-Dualband-Deauth/releases) page (latest: **v2.4.1**)
 2. Open **ESPConnect** in a Chromium-based browser (Chrome, Edge — Firefox is not supported for WebSerial)
 3. Connect your XIAO ESP32-C5 via USB-C
 4. Click **Connect** and select your device from the port list
-5. Choose **Custom Flash** and select `WiFuxx_v2.3.1_merged.bin`
+5. Choose **Custom Flash** and select `WiFuxx_v2.4.1_merged.bin`
 6. Set the flash address to `0x0`
 7. Click **Flash** and wait for it to complete
 8. Press the reset button on the XIAO — WiFuxx will boot immediately

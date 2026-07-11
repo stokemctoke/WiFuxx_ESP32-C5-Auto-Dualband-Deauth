@@ -10,7 +10,7 @@
 WiFuxx running on a **bare Espressif ESP32-C5-DevKitC-1** — no screen required. The
 DevKit's **onboard RGB LED** is your status display, and the optional **web control
 panel** gives you full control from a phone. It's the **same firmware** as the XIAO
-build: one binary, `WiFuxx_v2.3.1_merged.bin`, runs on both boards.
+build: one binary, `WiFuxx_v2.4.1_merged.bin`, runs on both boards.
 
 > 👉 Using the XIAO custom board with an OLED instead? See the **[XIAO User Manual](USER-MANUAL-XIAO.md)** or **[Quick Start](QUICK-START-XIAO.md)**. Developers: see the main **[README](README.md)**.
 
@@ -51,7 +51,7 @@ SSD1306 to **SDA = GPIO23 / SCL = GPIO24** and the firmware will use it automati
 
 ## ⚡ Flashing the Pre-built Binary
 
-The DevKit uses the **identical** `WiFuxx_v2.3.1_merged.bin` as the XIAO build — the
+The DevKit uses the **identical** `WiFuxx_v2.4.1_merged.bin` as the XIAO build — the
 merged binary bundles the bootloader, partition table, and app, so flashing at `0x0`
 is all that's needed.
 
@@ -63,17 +63,17 @@ This is the recommended flashing tool for the ESP32-C5. Many popular online flas
 
 ### Steps
 
-1. Download `WiFuxx_v2.3.1_merged.bin` from the [Releases](https://github.com/stokemctoke/WiFuxx_ESP32-C5-Auto-Dualband-Deauth/releases) page.
+1. Download `WiFuxx_v2.4.1_merged.bin` from the [Releases](https://github.com/stokemctoke/WiFuxx_ESP32-C5-Auto-Dualband-Deauth/releases) page.
 2. Open **ESPConnect** in a Chromium-based browser (Chrome or Edge — Firefox is not supported for WebSerial).
 3. Plug the DevKit into USB-C and connect to its serial port.
-4. Choose **Custom Flash** and select `WiFuxx_v2.3.1_merged.bin`.
+4. Choose **Custom Flash** and select `WiFuxx_v2.4.1_merged.bin`.
 5. Set the flash address to `0x0`.
 6. Click **Flash** and wait for it to complete.
 
 **Prefer the command line?**
 
 ```bash
-esptool.py -p /dev/ttyACM0 write_flash 0x0 WiFuxx_v2.3.1_merged.bin
+esptool.py -p /dev/ttyACM0 write_flash 0x0 WiFuxx_v2.4.1_merged.bin
 # or, from a built tree:  idf.py -p /dev/ttyACM0 flash
 ```
 
@@ -166,7 +166,7 @@ Unplug USB. Power-on always restarts in automatic mode.
 
 | | XIAO custom board | Bare DevKitC-1 |
 | --- | --- | --- |
-| Binary | `WiFuxx_v2.3.1_merged.bin` | **same** `WiFuxx_v2.3.1_merged.bin` |
+| Binary | `WiFuxx_v2.4.1_merged.bin` | **same** `WiFuxx_v2.4.1_merged.bin` |
 | Status display | OLED (SSD1306) | Onboard RGB LED (GPIO27) |
 | Hold button (Control Mode / reset) | GPIO28 (printed BOOT) | GPIO28 — press the **RST**-labeled button (labels swapped) |
 | WebUI | ✅ `wifuxx.local` | ✅ `wifuxx.local` |

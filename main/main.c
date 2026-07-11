@@ -191,7 +191,7 @@ static led_strip_handle_t   status_led = NULL;
 #include "boot_bitmap.h"
 #include "gallus_bitmap.h"
 #include "gallus_flash_bitmap.h"
-#include "saltire_bitmap.h"
+#include "gg_logo_bitmap.h"
 #include "monitor_bitmap.h"
 #include "favicon.h"
 
@@ -525,16 +525,16 @@ static void oled_draw_bitmap_fullscreen(const uint8_t *bmp) {
 }
 
 // Boot sequence: "studio intro -> title card" — the Gallus Gadgets brand
-// animates in (saltire logo fades up, then the wordmark flashes), then the
+// animates in (gg logo fades up, then the wordmark flashes), then the
 // WiFuxx product logo + the WebUI hint / disclaimer, before handing off to
 // scanning. The BOOT-hold works the whole time the device is attacking, so this
 // screen is purely a heads-up — we have all the time we need here.
 static void oled_display_text_intro(void) {
-    // -- Gallus Gadgets: saltire logo fades in via the contrast register --
+    // -- Gallus Gadgets: gg logo fades in via the contrast register --
     // Quadratic ease-in (level ~ i^2) so it emerges slowly from near-black and
     // brightens smoothly — many small steps keep the ramp gradient-smooth.
     oled_set_contrast(0x00);
-    oled_draw_bitmap_fullscreen(saltire_bitmap);
+    oled_draw_bitmap_fullscreen(gg_logo_bitmap);
     const int fade_steps = 64;
     for (int i = 0; i <= fade_steps; i++) {
         int level = (i * i * 255) / (fade_steps * fade_steps);
@@ -542,18 +542,18 @@ static void oled_display_text_intro(void) {
         vTaskDelay(pdMS_TO_TICKS(11));
     }
     oled_set_contrast(0xFF);
-    vTaskDelay(pdMS_TO_TICKS(1100));
+    vTaskDelay(pdMS_TO_TICKS(1600));
 
     // -- Gallus Gadgets wordmark: settle, then flash/pop (normal <-> inverted) --
     oled_draw_bitmap_fullscreen(gallus_bitmap);
-    vTaskDelay(pdMS_TO_TICKS(400));
+    vTaskDelay(pdMS_TO_TICKS(300));
     for (int i = 0; i < 3; i++) {
         oled_draw_bitmap_fullscreen(gallus_flash_bitmap);
         vTaskDelay(pdMS_TO_TICKS(55));
         oled_draw_bitmap_fullscreen(gallus_bitmap);
         vTaskDelay(pdMS_TO_TICKS(70));
     }
-    vTaskDelay(pdMS_TO_TICKS(850));
+    vTaskDelay(pdMS_TO_TICKS(450));
 
     // -- WiFuxx product logo --
     oled_draw_bitmap_fullscreen(boot_bitmap);

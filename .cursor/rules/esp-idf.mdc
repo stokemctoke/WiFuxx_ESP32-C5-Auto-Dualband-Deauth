@@ -1,0 +1,9 @@
+---
+description: WiFuxx project guidance — canonical source is /AGENTS.md
+alwaysApply: true
+---
+
+# WiFuxx
+
+Canonical build, versioning, OTA, hardware, and release guidance for this
+project lives in **`/AGENTS.md`** at the repo root. Read that first.

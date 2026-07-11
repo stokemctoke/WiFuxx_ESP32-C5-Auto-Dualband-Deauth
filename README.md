@@ -7,13 +7,13 @@
 
 **Current release:** [v2.4.1](https://github.com/stokemctoke/WiFuxx_ESP32-C5-Auto-Dualband-Deauth/releases/tag/v2.4.1) — **over-the-air updates**: check for and install new firmware straight from the WebUI over your home Wi-Fi, on a dual-OTA partition layout that rolls back a failed update. Plus a Gallus Gadgets logo splash. Builds on v2.3.x — AUTO MODE, battery-hardware auto-detect (Charge Mode hidden on non-battery boards), always-on battery icon, LiPo charge curve, Charge Mode, WebUI settings (NVS), mDNS.
 
-![image](WiFuxx_DualBand-Deauth-Firmware.jpg)
+![image](docs/WiFuxx_DualBand-Deauth-Firmware.jpg)
 
 **WiFuxx** is a compact, autonomous deauthentication tool designed for the XIAO ESP32-C5. It scans for nearby Wi-Fi networks, filters by signal strength, and launches targeted deauth attacks indefinitely — all displayed on a tiny OLED screen. It runs hands-free by default, with an **optional phone-friendly web control panel** for hand-picking targets and tuning settings.
 
-> 🔌 **Running on a bare ESP32-C5-DevKitC-1 (no OLED)?** The same binary works there too — see the **[Dev-Kit User Manual](USER-MANUAL-DEVKIT.md)** for flashing and the onboard RGB-LED status guide.
+> 🔌 **Running on a bare ESP32-C5-DevKitC-1 (no OLED)?** The same binary works there too — see the **[Dev-Kit User Manual](docs/USER-MANUAL-DEVKIT.md)** for flashing and the onboard RGB-LED status guide.
 
-> 📦 **Gallus Gadgets XIAO build?** See **[Quick Start (XIAO)](QUICK-START-XIAO.md)** and the full **[XIAO User Manual](USER-MANUAL-XIAO.md)**.
+> 📦 **Gallus Gadgets XIAO build?** See **[Quick Start (XIAO)](docs/QUICK-START-XIAO.md)** and the full **[XIAO User Manual](docs/USER-MANUAL-XIAO.md)**.
 
 ---
 
@@ -333,10 +333,9 @@ I (7685) WiFuxx:   5GHz:     2100 pkt (1050 pps) - 3 targets
 | Document | Audience |
 | -------- | -------- |
 | [README.md](README.md) | Developers — build, flash, wiring, operation |
-| [QUICK-START-XIAO.md](QUICK-START-XIAO.md) | Gallus Gadgets XIAO owners — one-page getting started |
-| [USER-MANUAL-XIAO.md](USER-MANUAL-XIAO.md) | Gallus Gadgets XIAO owners — full manual |
-| [USER-MANUAL-DEVKIT.md](USER-MANUAL-DEVKIT.md) | Bare ESP32-C5-DevKitC-1 users — RGB LED guide |
-| [BATTERY-METER-WIRING.md](BATTERY-METER-WIRING.md) | Custom hardware — external ADC divider (superseded on XIAO) |
+| [docs/QUICK-START-XIAO.md](docs/QUICK-START-XIAO.md) | Gallus Gadgets XIAO owners — one-page getting started |
+| [docs/USER-MANUAL-XIAO.md](docs/USER-MANUAL-XIAO.md) | Gallus Gadgets XIAO owners — full manual |
+| [docs/USER-MANUAL-DEVKIT.md](docs/USER-MANUAL-DEVKIT.md) | Bare ESP32-C5-DevKitC-1 users — RGB LED guide |
 
 ---
 

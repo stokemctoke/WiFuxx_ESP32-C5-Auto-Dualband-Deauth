@@ -67,7 +67,7 @@ Regenerate the merged bin from a fresh build:
 `master` is the only long-lived branch — delete work branches after they merge.
 
 ## Customer-facing docs
-`README.md`, `USER-MANUAL-XIAO.md`, `USER-MANUAL-DEVKIT.md`, `QUICK-START-XIAO.md`.
+`README.md`, `docs/USER-MANUAL-XIAO.md`, `docs/USER-MANUAL-DEVKIT.md`, `docs/QUICK-START-XIAO.md`.
 Each carries a `*Firmware vX.Y.Z · Last updated YYYY-MM-DD*` stamp under its H1 —
 **bump both the version and the date on any doc edit or release** (the PCB has a
 QR code pointing to these pages, so they must match the shipped firmware).

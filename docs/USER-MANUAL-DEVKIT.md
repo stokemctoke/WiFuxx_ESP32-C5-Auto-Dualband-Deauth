@@ -14,7 +14,7 @@ DevKit's **onboard RGB LED** is your status display, and the optional **web cont
 panel** gives you full control from a phone. It's the **same firmware** as the XIAO
 build: one binary, `WiFuxx_v2.4.1_merged.bin`, runs on both boards.
 
-> 👉 Using the XIAO custom board with an OLED instead? See the **[XIAO User Manual](USER-MANUAL-XIAO.md)** or **[Quick Start](QUICK-START-XIAO.md)**. Developers: see the main **[README](README.md)**.
+> 👉 Using the XIAO custom board with an OLED instead? See the **[XIAO User Manual](USER-MANUAL-XIAO.md)** or **[Quick Start](QUICK-START-XIAO.md)**. Developers: see the main **[README](../README.md)**.
 
 ---
 

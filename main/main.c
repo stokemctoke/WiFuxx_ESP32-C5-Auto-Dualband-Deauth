@@ -2244,6 +2244,12 @@ static bool ota_download_and_flash(const char *tag) {
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms        = 20000,
         .keep_alive_enable = true,
+        // GitHub redirects the download to an objects.githubusercontent.com URL whose
+        // AWS-signed query string is ~1KB. The default 512B TX buffer can't hold the
+        // "GET <signed-url> HTTP/1.1" request line -> esp_http_client logs "Out of
+        // buffer" and esp_https_ota_begin fails. Give both buffers room for it.
+        .buffer_size       = 2048,
+        .buffer_size_tx    = 2048,
     };
     esp_https_ota_config_t ota_cfg = {
         .http_config         = &http_cfg,

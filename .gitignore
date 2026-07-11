@@ -8,3 +8,4 @@ managed_components/
 *.bin
 *.elf
 *.old
+.vscode/

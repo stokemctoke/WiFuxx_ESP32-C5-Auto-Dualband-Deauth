@@ -1,0 +1,16 @@
+# WiFuxx 4MB dual-OTA partition table.
+# Fits 4MB flash and runs unchanged on 8MB boards (the top half is just unused).
+# Two 1.81MB app slots (ota_0/ota_1) let the WebUI Update flow flash the inactive
+# slot and fall back to the old one if an update fails. WebUI HTML is compiled into
+# the app, so no SPIFFS/storage partition is needed.
+#
+# IMPORTANT: changing this table (or coming from the old 2MB single-app layout)
+# requires a one-time `idf.py erase-flash` before the first flash, or stale otadata
+# will point at slots that no longer exist and the device won't boot.
+#
+# Name,     Type, SubType, Offset,   Size
+nvs,        data, nvs,     0x9000,   0x6000
+otadata,    data, ota,     0xf000,   0x2000
+phy_init,   data, phy,     0x11000,  0x1000
+ota_0,      app,  ota_0,   0x20000,  0x1D0000
+ota_1,      app,  ota_1,   0x1F0000, 0x1D0000

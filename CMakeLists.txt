@@ -1,3 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/version.txt" PROJECT_VER_RAW)
+string(STRIP "${PROJECT_VER_RAW}" PROJECT_VER)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(WiFuxx_Dualband_Deauther)

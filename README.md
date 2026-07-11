@@ -38,6 +38,7 @@
 - **⚡ Autonomous by Default** — Power on and it scans, then attacks indefinitely. No app, no setup, no internet.
 - **📱 Optional Web Control Panel** — Hold **BOOT** for 2 s to reboot into a phone-friendly WebUI: scan and hand-pick a single AP, a network's 2.4 + 5 GHz pair, or everything. Reachable at `http://192.168.42.42` **or `http://wifuxx.local`** (mDNS). The radio is time-separated from the attack by a reboot, sidestepping the ESP32-C5's single-radio AP-vs-attack conflict.
 - **🔄 AUTO MODE** — A one-tap **Power → AUTO MODE** button in the WebUI reboots straight back into hands-free autonomous scanning, with no attack command issued.
+- **⬆️ Over-the-Air Updates** — An **Update** card in the WebUI takes your home Wi-Fi details, then reboots into a dedicated OTA mode that joins your network, checks GitHub for a newer release, and (if there is one) flashes it to the spare app slot — all with progress shown on the OLED. Dual-OTA partitioning means a failed update rolls back to the working firmware. Fits 4 MB flash, so the same image runs on the XIAO and 4/8 MB DevKits.
 - **💾 Persistent Settings (NVS)** — Edit the AP name/channel, per-band RSSI thresholds, per-band burst sizes, an optional WebUI login, and the boot splash right from the panel — all saved across reboots. Forgot the login? Hold **BOOT for 10 s** in the panel to factory-reset.
 - **📊 Smart Targeting** — Separate signal thresholds per band: > -75 dBm (2.4GHz) and > -70 dBm (5GHz) by default.
 - **🖥️ OLED Display** — Real-time status on a 128×64 screen:
@@ -182,10 +183,13 @@ cp /path/to/WiFuxx/patched_libnet/libnet80211.a .
 cd /path/to/WiFuxx
 . "$IDF_PATH/export.sh"    # if not already sourced in this shell
 idf.py build
+idf.py -p /dev/ttyUSB0 erase-flash   # ONE-TIME: required when moving to the dual-OTA layout
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
 > Replace `/dev/ttyUSB0` with your actual serial port. Also may be shown as `/dev/ttyACM0`
+
+> **⚠️ First flash of v2.4.0 (OTA) — run `erase-flash` once.** v2.4.0 switches to a 4 MB dual-OTA partition table. Flashing it over an older 2 MB single-app layout without erasing leaves stale `otadata` pointing at partitions that no longer exist, which can cause a boot loop. `idf.py erase-flash` once before the first v2.4.0 flash fixes this; subsequent flashes (and OTA updates) don't need it. The 4 MB image runs fine on 4 MB and 8 MB boards alike — do **not** raise the flash size to 8 MB.
 
 ---
 
@@ -220,6 +224,20 @@ Hold **BOOT** for ~2 s while running and WiFuxx reboots into Control Mode: it br
 5. Use **AUTO MODE** (Power card) to return to hands-free autonomous scanning without launching an attack. Use **CHARGE MODE** (XIAO with battery only) for low-power charging.
 
 > Set a WebUI login and forgot it? Hold **BOOT for 10 s** while in Control Mode to wipe settings back to defaults. Power-cycling always returns to automatic Attack Mode.
+
+### Over-the-Air Updates
+
+The **Update** card in the WebUI updates the firmware straight from GitHub — no cable needed:
+
+1. In the Update card, enter your **home Wi-Fi SSID and password** and tap **CHECK FOR UPDATE**. The card also shows the currently-installed firmware version.
+2. The device saves the credentials (in NVS) and **reboots into OTA mode** — it leaves the SoftAP, so your phone disconnects here. **Watch the OLED**, which walks through: joining Wi-Fi → checking GitHub → the result.
+3. If you're already on the latest release, it shows **"Up to date"** and reboots back to Attack Mode.
+4. If a newer release exists, it downloads it, shows a live **"Writing %"** and **"DO NOT UNPLUG"**, flashes the **spare OTA slot**, and reboots into the new firmware.
+5. On any problem (wrong password, no internet, bad download) it keeps the **existing** firmware and reboots into the WebUI so you can fix the details and retry.
+
+Because the two app slots are independent, a failed or interrupted update never bricks the device — it simply keeps running the old slot. Updates require the release on GitHub to attach the built `WiFuxx_Dualband_Deauther.bin` as a release asset.
+
+> **Note:** OTA can only *replace* firmware that already has OTA — i.e. v2.4.0 and later. The very first move to v2.4.0 is a one-time USB flash (with `erase-flash`, see Step 4); from then on, updates are wireless.
 
 ### OLED Display Layout
 

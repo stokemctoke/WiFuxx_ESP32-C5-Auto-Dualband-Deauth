@@ -1,2 +1,15 @@
 # Lock release build settings — prevents idf.py from flipping to Debug on reconfigure.
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# 4MB flash + dual-OTA partition table (see partitions.csv). Pinned to 4MB so the
+# same image runs on the 4MB XIAO and on 4/8MB DevKits. Do NOT raise to 8MB — an
+# 8MB board runs the 4MB table fine (top half unused); resizing risks the stale-
+# otadata boot loop. Changing the table needs a one-time `idf.py erase-flash`.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# TLS trust store for HTTPS OTA (GitHub releases). Bundle ships in-app (~64KB).
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y

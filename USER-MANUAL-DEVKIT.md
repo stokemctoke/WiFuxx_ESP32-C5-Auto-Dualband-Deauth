@@ -124,6 +124,16 @@ WiFuxx reboots and attacks your choice. Hold **RESET** again to reopen the panel
 > as **Hidden (MAC address)**. You can deauth them by MAC like any other network; only the
 > **DUAL-BAND SAME AP** shortcut is unavailable for them.
 
+### Over-the-air updates
+The **Update** card checks GitHub for newer firmware and installs it wirelessly. Enter
+your **home Wi-Fi name and password**, tap **CHECK FOR UPDATE**, and WiFuxx reboots into
+OTA mode — it joins your Wi-Fi, checks for a newer release, and if one exists downloads
+and installs it, then restarts on the new firmware. Progress shows on the LED/serial (and
+the OLED if you fitted one). A failed update keeps the current firmware, so it can't brick
+the board. The first update-capable build (v2.4.0) must be loaded once over USB — **run
+`idf.py -p <port> erase-flash` before that first v2.4.0 flash** (the partition layout
+changes); after that, updates are wireless.
+
 ### Factory reset / lockout escape
 Set a WebUI login and forgot it? In Control Mode, **hold RESET (the RST-labeled button)
 for ~10 s** — WiFuxx wipes all settings back to defaults and reboots.

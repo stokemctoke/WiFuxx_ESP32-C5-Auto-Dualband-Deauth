@@ -247,6 +247,24 @@ under *Power* in the web panel, or switch the power off and back on.
 > WiFuxx into low-power charging (Wi-Fi off) with a battery readout on screen — see
 > §3. To leave Charge Mode, switch the power off and on.
 
+### Updating the firmware (over the air)
+
+The **Update** card checks GitHub for newer firmware and installs it wirelessly — no
+cable needed. It also shows which version you're currently running.
+
+1. Type in your **home Wi-Fi name and password**, then tap **CHECK FOR UPDATE**.
+2. WiFuxx reboots and joins your home Wi-Fi (your phone will drop off its hotspot —
+   that's expected). **Watch the OLED**: it shows *joining Wi-Fi → checking GitHub →*
+   the result.
+3. If you're already up to date, it says so and returns to normal. If there's a newer
+   version, it downloads and installs it — the screen shows **Writing %** and **DO NOT
+   UNPLUG** — then restarts on the new firmware.
+4. If anything goes wrong (wrong password, no internet), it keeps your current
+   firmware and comes back to the web panel so you can try again.
+
+> You only ever plug in via USB once, to load the first update-capable version. After
+> that, updates are wireless.
+
 ---
 
 ## 9. Settings — Personalise WiFuxx

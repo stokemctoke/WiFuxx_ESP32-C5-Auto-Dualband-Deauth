@@ -11,7 +11,8 @@
 #include "esp_err.h"
 
 // Bump when the struct layout changes — a mismatch on load falls back to defaults.
-#define SETTINGS_VERSION   1
+// v2: added home_ssid / home_pass (home Wi-Fi creds for OTA update mode).
+#define SETTINGS_VERSION   2
 
 // Compile-time defaults (single source of truth for "factory" values).
 #define WF_DEF_AP_SSID      "WiFuxx-Control"
@@ -33,6 +34,8 @@ typedef struct {
     char    ui_user[17];    // WebUI Basic-auth username ("" disables auth)
     char    ui_pass[33];    // WebUI Basic-auth password
     bool    skip_splash;    // skip the boot branding splashes
+    char    home_ssid[33];  // home Wi-Fi SSID joined in OTA mode ("" = not set)
+    char    home_pass[64];  // home Wi-Fi password (WPA2 PSK, up to 63 chars)
 } wifuxx_settings_t;
 
 // The live settings, populated by settings_load(). Read freely after that.

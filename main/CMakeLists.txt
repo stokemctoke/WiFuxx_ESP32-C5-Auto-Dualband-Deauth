@@ -9,6 +9,10 @@ idf_component_register(
         esp_timer
         driver
         esp_http_server
+        esp_http_client
+        esp_https_ota
+        app_update
+        esp-tls
         cjson
         mdns
         esp_adc

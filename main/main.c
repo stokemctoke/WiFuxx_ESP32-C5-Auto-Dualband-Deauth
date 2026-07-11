@@ -18,6 +18,12 @@
 #include "esp_system.h"
 #include "esp_attr.h"
 #include "esp_http_server.h"
+#include "esp_http_client.h"
+#include "esp_https_ota.h"
+#include "esp_ota_ops.h"
+#include "esp_app_desc.h"
+#include "esp_crt_bundle.h"
+#include "freertos/event_groups.h"
 #include "mdns.h"
 #include "cJSON.h"
 #include "driver/i2c.h"
@@ -79,6 +85,16 @@ static const char *TAG = "WiFuxx";
 #define BATTERY_PRESENT_MIN_MV 2500           // below this we assume no battery/divider
 #define CHARGE_UPDATE_SEC      30             // charge-mode wake interval to refresh the readout
 #define CHARGE_OLED_CONTRAST   0x80           // ~50% — dim the panel in charge mode to save power
+
+// OTA update — the WebUI "Update" card saves home Wi-Fi creds and reboots into OTA
+// mode, which joins the home AP (STA), asks GitHub for the latest release tag, and
+// (if newer) flashes the release asset into the inactive OTA slot. Single-radio, so
+// like WebUI/CHARGE this is a dedicated boot mode with OLED progress — no AP+STA.
+#define OTA_GITHUB_OWNER    "stokemctoke"
+#define OTA_GITHUB_REPO     "WiFuxx_ESP32-C5-Auto-Dualband-Deauth"
+#define OTA_ASSET_NAME      "WiFuxx_Dualband_Deauther.bin"  // must match the release asset
+#define OTA_WIFI_TIMEOUT_MS 20000
+#define OTA_WIFI_MAX_RETRY  5
 // =======================================================
 
 // ==================== Boot Mode (persisted across esp_restart in RTC memory) ====================
@@ -90,6 +106,7 @@ static const char *TAG = "WiFuxx";
 #define BOOT_MODE_ATTACK   0u
 #define BOOT_MODE_WEBUI    1u
 #define BOOT_MODE_CHARGE   2u            // low-power: Wi-Fi off, just charge the battery
+#define BOOT_MODE_OTA      3u            // STA -> home AP -> check GitHub -> OTA update
 #define SEL_MODE_ALL       0u            // attack all targets above threshold (autonomous default)
 #define SEL_MODE_SINGLE    1u            // attack only g_sel_mac (ignores threshold)
 #define SEL_MODE_DUALBAND  2u            // attack every BSSID of g_sel_ssid, both bands (ignores threshold)
@@ -572,6 +589,31 @@ static uint32_t get_time_sec(void) {
     return (uint32_t)(esp_timer_get_time() / 1000000ULL);
 }
 
+// Firmware version compiled into the app descriptor (from version.txt via IDF's
+// PROJECT_VER). Used both for display and the OTA "is a newer release out?" check.
+static const char *fw_version(void) {
+    return esp_app_get_description()->version;
+}
+
+// Parse the first up-to-three dotted integers of a version string into v[3],
+// skipping any leading non-digits (e.g. a "v" prefix) and ignoring any suffix
+// (e.g. "-5-gabcdef"). Missing components read as 0.
+static void parse_semver(const char *s, int v[3]) {
+    v[0] = v[1] = v[2] = 0;
+    while (*s && (*s < '0' || *s > '9')) s++;
+    sscanf(s, "%d.%d.%d", &v[0], &v[1], &v[2]);
+}
+
+// Compare two semver strings: >0 if a is newer than b, <0 if older, 0 if equal.
+static int semver_cmp(const char *a, const char *b) {
+    int va[3], vb[3];
+    parse_semver(a, va);
+    parse_semver(b, vb);
+    for (int i = 0; i < 3; i++)
+        if (va[i] != vb[i]) return va[i] > vb[i] ? 1 : -1;
+    return 0;
+}
+
 // Read an HTTP request body up to buf_sz-1 bytes (null-terminated). Returns the
 // number of payload bytes stored, or a negative value on a hard recv error.
 static int http_recv_body(httpd_req_t *req, char *buf, size_t buf_sz) {
@@ -612,7 +654,8 @@ static void boot_mode_init(void) {
         g_sel_ssid[0] = '\0';
     }
     const char *mode_name = g_boot_mode == BOOT_MODE_WEBUI  ? "WEBUI"
-                          : g_boot_mode == BOOT_MODE_CHARGE ? "CHARGE" : "ATTACK";
+                          : g_boot_mode == BOOT_MODE_CHARGE ? "CHARGE"
+                          : g_boot_mode == BOOT_MODE_OTA    ? "OTA" : "ATTACK";
     ESP_LOGI(TAG, "Boot mode: %s (reset reason %d)", mode_name, (int)reason);
 }
 
@@ -623,7 +666,8 @@ static void reboot_into(uint32_t mode) {
     g_boot_magic = BOOT_MODE_MAGIC;
     g_boot_mode  = mode;
     ESP_LOGW(TAG, "Rebooting into %s mode",
-             mode == BOOT_MODE_WEBUI ? "WEBUI" : mode == BOOT_MODE_CHARGE ? "CHARGE" : "ATTACK");
+             mode == BOOT_MODE_WEBUI ? "WEBUI" : mode == BOOT_MODE_CHARGE ? "CHARGE"
+             : mode == BOOT_MODE_OTA ? "OTA" : "ATTACK");
     vTaskDelay(pdMS_TO_TICKS(150));  // let any in-flight HTTP response / log flush
     esp_restart();
 }
@@ -1263,6 +1307,13 @@ static const char WEBUI_HTML[] =
 "<div class='card'><h2>Attack</h2><button class='btn btn-orange' id='all'>DEAUTH ALL</button></div>\n"
 "<div class='card'><h2>Networks</h2><div id='netlist'><p class='empty'>No scan yet.</p></div></div>\n"
 "<div class='card'><h2>Power</h2><button class='btn btn-cyan' id='auto'>AUTO MODE</button><button class='btn btn-cyan' id='charge'>CHARGE MODE</button></div>\n"
+"<div class='card'><h2>Update</h2>\n"
+"<p id='fwver' class='empty' style='text-align:left;margin-bottom:.9rem'>Firmware --</p>\n"
+"<label>Home Wi-Fi SSID<input id='home_ssid' maxlength='32'></label>\n"
+"<label>Home Wi-Fi password<input id='home_pass' type='password' maxlength='63' placeholder='unchanged'></label>\n"
+"<button class='btn btn-orange' id='update'>CHECK FOR UPDATE</button>\n"
+"<p class='empty' style='text-align:left;margin-top:.7rem'>Unit reboots, joins your Wi-Fi, and checks GitHub for a newer release. Watch the device screen for progress.</p>\n"
+"</div>\n"
 "<div class='card'><h2>Settings</h2>\n"
 "<label>AP SSID<input id='ap_ssid' maxlength='32'></label>\n"
 "<label>AP channel (1-13)<input id='ap_channel' type='number' min='1' max='13'></label>\n"
@@ -1335,9 +1386,18 @@ static const char WEBUI_HTML[] =
 "  fetch('/charge',{method:'POST'}).catch(()=>{});\n"
 "};\n"
 "const $=id=>document.getElementById(id);\n"
+"$('update').onclick=()=>{\n"
+"  const s=$('home_ssid').value.trim();\n"
+"  if(!s){toast('Enter your home Wi-Fi SSID first');return;}\n"
+"  if(!confirm('Reboot and check for a firmware update? The unit leaves the WebUI, joins your Wi-Fi, and updates only if a newer release exists. Watch the device screen.'))return;\n"
+"  const b={ssid:s};if($('home_pass').value)b.pass=$('home_pass').value;\n"
+"  toast('Rebooting to check for updates \\u2014 watch the device screen.');\n"
+"  fetch('/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).catch(()=>{});\n"
+"};\n"
 "function loadCfg(){fetch('/config').then(r=>r.json()).then(c=>{\n"
 "  $('ap_ssid').value=c.ap_ssid;$('ap_channel').value=c.ap_channel;$('thr_24').value=c.thr_24;$('thr_5').value=c.thr_5;\n"
 "  $('burst_24').value=c.burst_24;$('burst_5').value=c.burst_5;$('ui_user').value=c.ui_user;$('skip_splash').checked=c.skip_splash;\n"
+"  $('home_ssid').value=c.home_ssid||'';if($('fwver'))$('fwver').textContent='Firmware v'+(c.fw||'?');\n"
 "  if(!c.has_battery){const ch=$('charge');if(ch)ch.style.display='none';}\n"
 "}).catch(()=>{});}\n"
 "loadCfg();\n"
@@ -1557,6 +1617,8 @@ static esp_err_t config_get_handler(httpd_req_t *req) {
     cJSON_AddStringToObject(o, "ui_user",     g_settings.ui_user);
     cJSON_AddBoolToObject  (o, "skip_splash", g_settings.skip_splash);
     cJSON_AddBoolToObject  (o, "has_battery", g_battery_present);
+    cJSON_AddStringToObject(o, "home_ssid",   g_settings.home_ssid);   // home_pass never sent back
+    cJSON_AddStringToObject(o, "fw",          fw_version());
 
     char *out = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
@@ -1655,13 +1717,58 @@ static esp_err_t auto_post_handler(httpd_req_t *req) {
     return ESP_OK;                  // not reached
 }
 
+// POST /update — save the home Wi-Fi creds (ssid required; pass only if supplied,
+// so it survives leaving the field blank), then reboot into OTA mode to check
+// GitHub. Body: {"ssid":"..","pass":".."}.
+static esp_err_t update_post_handler(httpd_req_t *req) {
+    if (!webui_authorized(req)) return ESP_OK;
+
+    char buf[256];
+    int n = http_recv_body(req, buf, sizeof(buf));
+    if (n <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, NULL); return ESP_FAIL; }
+
+    cJSON *j = cJSON_Parse(buf);
+    if (!j) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, NULL); return ESP_FAIL; }
+
+    cJSON *it;
+    if ((it = cJSON_GetObjectItem(j, "ssid")) && cJSON_IsString(it) && it->valuestring[0]) {
+        strncpy(g_settings.home_ssid, it->valuestring, sizeof(g_settings.home_ssid) - 1);
+        g_settings.home_ssid[sizeof(g_settings.home_ssid) - 1] = '\0';
+    }
+    if ((it = cJSON_GetObjectItem(j, "pass")) && cJSON_IsString(it)) {
+        strncpy(g_settings.home_pass, it->valuestring, sizeof(g_settings.home_pass) - 1);
+        g_settings.home_pass[sizeof(g_settings.home_pass) - 1] = '\0';
+    }
+    cJSON_Delete(j);
+
+    if (g_settings.home_ssid[0] == '\0') {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"no ssid\"}");
+        return ESP_OK;
+    }
+
+    if (settings_save() != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"save failed\"}");
+        return ESP_OK;
+    }
+
+    ESP_LOGW(TAG, "WebUI update request -> reboot into OTA (home AP '%s')", g_settings.home_ssid);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    reboot_into(BOOT_MODE_OTA);      // short delay (response flush) then esp_restart()
+    return ESP_OK;                   // not reached
+}
+
 // ==================== WebUI: HTTP Server ====================
 static httpd_handle_t http_server = NULL;
 
 static void http_server_start(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_open_sockets = 7;    // LWIP cap: httpd reserves 3, so 7 is the safe max
-    config.max_uri_handlers = 12;   // we register 8; headroom for future routes
+    config.max_uri_handlers = 12;   // we register 10; headroom for future routes
     config.task_priority    = 4;
     config.stack_size       = 8192;
     config.lru_purge_enable = true;
@@ -1681,6 +1788,7 @@ static void http_server_start(void) {
         { .uri = "/config/reset", .method = HTTP_POST, .handler = config_reset_handler },
         { .uri = "/charge",       .method = HTTP_POST, .handler = charge_post_handler },
         { .uri = "/auto",         .method = HTTP_POST, .handler = auto_post_handler },
+        { .uri = "/update",       .method = HTTP_POST, .handler = update_post_handler },
     };
     for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++)
         httpd_register_uri_handler(http_server, &uris[i]);
@@ -1980,6 +2088,247 @@ static void charge_mode_run(void) {
     }
 }
 
+// ==================== OTA Update Mode ====================
+// Entered by rebooting into BOOT_MODE_OTA (from the WebUI "Update" card). Joins the
+// saved home AP as a station, asks the GitHub API for the latest release tag, and if
+// it's newer than fw_version() streams the release .bin into the inactive OTA slot
+// via esp_https_ota. All feedback is on the OLED — the phone is disconnected the
+// moment we leave the SoftAP, so there is no live WebUI here by design.
+
+// Three big centred lines under a fixed ">> OTA UPDATE" header.
+static void ota_show(const char *l1, const char *l2, const char *l3) {
+    for (int p = 0; p < 8; p++) oled_clear_page(p);
+    oled_draw_string(0, 0, ">> OTA UPDATE");
+    if (l1) oled_draw_string(0, 2, l1);
+    if (l2) oled_draw_string(0, 4, l2);
+    if (l3) oled_draw_string(0, 6, l3);
+    oled_flush();
+}
+
+// esp_https_ota progress -> redraw only the % line so the OLED isn't fully repainted.
+static void ota_progress(int pct) {
+    char line[17];
+    snprintf(line, sizeof(line), "Writing %d%%", pct);
+    oled_clear_page(4);
+    oled_draw_string(0, 4, line);
+    oled_flush();
+}
+
+// ---- STA connect to the home AP (event-group handshake) ----
+static EventGroupHandle_t s_ota_wifi_events;
+#define OTA_WIFI_CONNECTED_BIT BIT0
+#define OTA_WIFI_FAIL_BIT      BIT1
+static int s_ota_wifi_retry = 0;
+
+static void ota_wifi_event_handler(void *arg, esp_event_base_t base,
+                                   int32_t id, void *data) {
+    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        if (s_ota_wifi_retry < OTA_WIFI_MAX_RETRY) {
+            s_ota_wifi_retry++;
+            ESP_LOGW(TAG, "OTA STA disconnected, retry %d/%d", s_ota_wifi_retry, OTA_WIFI_MAX_RETRY);
+            esp_wifi_connect();
+        } else {
+            xEventGroupSetBits(s_ota_wifi_events, OTA_WIFI_FAIL_BIT);
+        }
+    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        s_ota_wifi_retry = 0;
+        xEventGroupSetBits(s_ota_wifi_events, OTA_WIFI_CONNECTED_BIT);
+    }
+}
+
+static bool ota_wifi_connect(const char *ssid, const char *pass) {
+    s_ota_wifi_events = xEventGroupCreate();
+    if (!s_ota_wifi_events) return false;
+
+    esp_netif_init();
+    esp_event_loop_create_default();
+    esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    wifi_check(esp_wifi_init(&cfg), "esp_wifi_init");
+    esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                        ota_wifi_event_handler, NULL, NULL);
+    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                        ota_wifi_event_handler, NULL, NULL);
+
+    wifi_config_t wc = {0};   // zero-init leaves a NUL terminator after each copy
+    size_t sl = strnlen(ssid, sizeof(wc.sta.ssid) - 1);
+    size_t pl = strnlen(pass, sizeof(wc.sta.password) - 1);
+    memcpy(wc.sta.ssid, ssid, sl);
+    memcpy(wc.sta.password, pass, pl);
+    wifi_check(esp_wifi_set_mode(WIFI_MODE_STA), "esp_wifi_set_mode(STA)");
+    wifi_check(esp_wifi_set_config(WIFI_IF_STA, &wc), "esp_wifi_set_config(STA)");
+    wifi_check(esp_wifi_start(), "esp_wifi_start");
+
+    EventBits_t bits = xEventGroupWaitBits(
+        s_ota_wifi_events, OTA_WIFI_CONNECTED_BIT | OTA_WIFI_FAIL_BIT,
+        pdFALSE, pdFALSE, pdMS_TO_TICKS(OTA_WIFI_TIMEOUT_MS));
+    return (bits & OTA_WIFI_CONNECTED_BIT) != 0;
+}
+
+// ---- GitHub: latest release tag ----
+// GET /releases/latest and pull "tag_name" out of the JSON. tag_name is emitted
+// early (before the long release body/assets), so a small buffer captures it even
+// though the full response is larger. Manual substring scan keeps us robust to the
+// body being truncated by the fixed read window.
+static bool github_latest_tag(char *tag_out, size_t tag_sz) {
+    char url[160];
+    snprintf(url, sizeof(url),
+             "https://api.github.com/repos/%s/%s/releases/latest",
+             OTA_GITHUB_OWNER, OTA_GITHUB_REPO);
+
+    esp_http_client_config_t cfg = {
+        .url               = url,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms        = 10000,
+        .keep_alive_enable = true,
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (!c) return false;
+    esp_http_client_set_header(c, "User-Agent", "WiFuxx-OTA");  // GitHub 403s without a UA
+    esp_http_client_set_header(c, "Accept", "application/vnd.github+json");
+
+    bool ok = false;
+    if (esp_http_client_open(c, 0) == ESP_OK) {
+        esp_http_client_fetch_headers(c);
+        int status = esp_http_client_get_status_code(c);
+        if (status == 200) {
+            char buf[3072];
+            int off = 0, r;
+            while (off < (int)sizeof(buf) - 1 &&
+                   (r = esp_http_client_read(c, buf + off, sizeof(buf) - 1 - off)) > 0)
+                off += r;
+            buf[off] = '\0';
+
+            char *p = strstr(buf, "\"tag_name\"");
+            if (p && (p = strchr(p, ':')) && (p = strchr(p, '"'))) {
+                p++;
+                char *e = strchr(p, '"');
+                if (e && (size_t)(e - p) < tag_sz) {
+                    memcpy(tag_out, p, e - p);
+                    tag_out[e - p] = '\0';
+                    ok = true;
+                }
+            }
+            if (!ok) ESP_LOGE(TAG, "OTA: tag_name not found in GitHub response");
+        } else {
+            ESP_LOGE(TAG, "OTA: GitHub API HTTP %d", status);
+        }
+    } else {
+        ESP_LOGE(TAG, "OTA: GitHub API connection failed");
+    }
+    esp_http_client_close(c);
+    esp_http_client_cleanup(c);
+    return ok;
+}
+
+// Add the User-Agent header on the OTA download client too (github.com is lenient
+// but the redirect target is happier with one). Runs when esp_https_ota inits.
+static esp_err_t ota_http_client_init_cb(esp_http_client_handle_t c) {
+    esp_http_client_set_header(c, "User-Agent", "WiFuxx-OTA");
+    return ESP_OK;
+}
+
+// Stream the release asset for `tag` into the inactive OTA slot, driving the OLED %.
+static bool ota_download_and_flash(const char *tag) {
+    char url[256];
+    snprintf(url, sizeof(url),
+             "https://github.com/%s/%s/releases/download/%s/%s",
+             OTA_GITHUB_OWNER, OTA_GITHUB_REPO, tag, OTA_ASSET_NAME);
+    ESP_LOGI(TAG, "OTA: downloading %s", url);
+
+    esp_http_client_config_t http_cfg = {
+        .url               = url,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms        = 20000,
+        .keep_alive_enable = true,
+    };
+    esp_https_ota_config_t ota_cfg = {
+        .http_config         = &http_cfg,
+        .http_client_init_cb = ota_http_client_init_cb,
+    };
+
+    esp_https_ota_handle_t h = NULL;
+    if (esp_https_ota_begin(&ota_cfg, &h) != ESP_OK || !h) {
+        ESP_LOGE(TAG, "OTA: esp_https_ota_begin failed");
+        return false;
+    }
+
+    int total = esp_https_ota_get_image_size(h);
+    int last_pct = -1;
+    esp_err_t err;
+    while ((err = esp_https_ota_perform(h)) == ESP_ERR_HTTPS_OTA_IN_PROGRESS) {
+        int read = esp_https_ota_get_image_len_read(h);
+        int pct = (total > 0) ? (read * 100 / total) : 0;
+        if (pct != last_pct) { last_pct = pct; ota_progress(pct); }
+    }
+
+    bool ok = (err == ESP_OK) && esp_https_ota_is_complete_data_received(h);
+    if (esp_https_ota_finish(h) != ESP_OK) ok = false;
+    if (!ok) ESP_LOGE(TAG, "OTA: download/flash failed (err %s)", esp_err_to_name(err));
+    return ok;
+}
+
+// The whole OTA flow. Never returns — every path reboots: success/up-to-date go to
+// ATTACK, any failure goes to WEBUI so the user can fix creds and retry.
+static void ota_mode_run(void) {
+    if (g_settings.home_ssid[0] == '\0') {
+        ota_show("No Wi-Fi saved", "Set it in the", "WebUI Update card");
+        vTaskDelay(pdMS_TO_TICKS(4000));
+        reboot_into(BOOT_MODE_WEBUI);
+    }
+
+    led_state = LED_STATE_WIFI_INIT;
+    ota_show("Joining Wi-Fi:", g_settings.home_ssid, "connecting...");
+    if (!ota_wifi_connect(g_settings.home_ssid, g_settings.home_pass)) {
+        ota_show("Wi-Fi FAILED", "Check name/pass", "in WebUI, retry");
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        reboot_into(BOOT_MODE_WEBUI);
+    }
+
+    led_state = LED_STATE_SCANNING;
+    ota_show("Connected.", "Checking GitHub", "for updates...");
+    char tag[32];
+    if (!github_latest_tag(tag, sizeof(tag))) {
+        ota_show("Check FAILED", "No internet?", "Retry via WebUI");
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        reboot_into(BOOT_MODE_WEBUI);
+    }
+
+    const char *cur = fw_version();
+    char l_cur[48], l_new[48];   // oversized; oled_draw_string clips at 16 chars
+    snprintf(l_cur, sizeof(l_cur), "have %s", cur);
+    snprintf(l_new, sizeof(l_new), "new  %s", tag);
+    ESP_LOGI(TAG, "OTA: current %s, latest %s", cur, tag);
+
+    if (semver_cmp(tag, cur) <= 0) {
+        ota_show("Up to date :)", l_cur, l_new);
+        vTaskDelay(pdMS_TO_TICKS(6000));
+        reboot_into(BOOT_MODE_ATTACK);
+    }
+
+    led_state = LED_STATE_ATTACKING;   // red breath = writing flash, "busy, don't unplug"
+    ota_show("Updating!", l_new, "DO NOT UNPLUG");
+    vTaskDelay(pdMS_TO_TICKS(1200));
+
+    if (ota_download_and_flash(tag)) {
+        ota_show("Update OK!", l_new, "rebooting...");
+        vTaskDelay(pdMS_TO_TICKS(2500));
+        reboot_into(BOOT_MODE_ATTACK);   // new slot is now the boot partition
+    } else {
+        ota_show("Update FAILED", "kept old fw", "Retry via WebUI");
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        reboot_into(BOOT_MODE_WEBUI);
+    }
+}
+
+static void ota_mode_task(void *pvParameters) {
+    ota_mode_run();     // never returns (always reboots)
+    vTaskDelete(NULL);
+}
+
 // ==================== Main ====================
 void app_main(void) {
     boot_mode_init();   // pick ATTACK (default) or WEBUI from persisted RTC state
@@ -2013,6 +2362,14 @@ void app_main(void) {
     if (g_boot_mode == BOOT_MODE_CHARGE) {
         // -------- Charge mode: Wi-Fi off, low power, battery readout --------
         charge_mode_run();   // never returns (power switch / cold boot to leave)
+    }
+
+    if (g_boot_mode == BOOT_MODE_OTA) {
+        // -------- OTA mode: STA -> home AP -> GitHub check -> flash inactive slot.
+        // Runs in its own generous-stack task (TLS handshake + OTA is stack-heavy);
+        // it draws the OLED directly, so no display_task here. Never returns. --------
+        xTaskCreate(ota_mode_task, "ota", 10240, NULL, 5, NULL);
+        while (1) vTaskDelay(pdMS_TO_TICKS(10000));
     }
 
     if (g_boot_mode == BOOT_MODE_WEBUI) {

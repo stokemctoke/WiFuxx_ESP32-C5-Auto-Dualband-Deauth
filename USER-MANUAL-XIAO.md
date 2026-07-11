@@ -1,5 +1,7 @@
 # WiFuxx — User Manual
 
+*Firmware v2.4.1 · Last updated 2026-07-11*
+
 ### Compact Edition · Autonomous Dual-Band Wi-Fi Deauthentication Tool
 **by Gallus Gadgets**
 

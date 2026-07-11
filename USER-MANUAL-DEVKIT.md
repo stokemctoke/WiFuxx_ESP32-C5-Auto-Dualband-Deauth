@@ -5,6 +5,8 @@
 
 # WiFuxx — Dev-Kit User Manual
 
+*Firmware v2.4.1 · Last updated 2026-07-11*
+
 **by Gallus Gadgets** · *autonomous dual-band Wi-Fi deauther*
 
 WiFuxx running on a **bare Espressif ESP32-C5-DevKitC-1** — no screen required. The

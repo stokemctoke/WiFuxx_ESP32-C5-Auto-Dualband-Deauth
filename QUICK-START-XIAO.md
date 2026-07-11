@@ -1,5 +1,7 @@
 # WiFuxx — Quick Start
 
+*Firmware v2.4.1 · Last updated 2026-07-11*
+
 **by Gallus Gadgets** · *autonomous dual-band Wi-Fi deauther*
 
 > ⚠️ **Your own networks only.** Using this against networks you don't own — or

@@ -1,6 +1,10 @@
 // main.c - WiFuxx C5 Dualband Deauthentication Tool - Infinite Attack Edition
-// Dual-band deauth for ESP32-C5 with SSD1306 OLED
+// Dual-band deauth for ESP32-C5 — DevBoard (headless) variant.
 // Scans on boot, attacks all targets above threshold indefinitely.
+//
+// DevBoard build: no OLED, no battery/charge hardware. Status is shown on the
+// onboard WS2812B LED (GPIO27) and the serial console; control is via the WebUI
+// (hold BOOT 2s to enter). See AGENTS.md for the shipped dual-variant firmware.
 
 #include <stdio.h>
 #include <string.h>
@@ -26,7 +30,6 @@
 #include "freertos/event_groups.h"
 #include "mdns.h"
 #include "cJSON.h"
-#include "driver/i2c.h"
 #include "driver/gpio.h"
 #include "led_strip.h"
 #include "settings.h"
@@ -43,13 +46,6 @@ static const char *TAG = "WiFuxx";
 #define CHANNEL_SWITCH_DELAY_MS    12
 #define TARGET_BURST_DELAY_MS      1
 #define BAND_SWITCH_DELAY_MS       5
-
-// OLED I2C
-#define I2C_MASTER_NUM     I2C_NUM_0
-#define I2C_MASTER_SDA_IO  GPIO_NUM_23
-#define I2C_MASTER_SCL_IO  GPIO_NUM_24
-#define I2C_MASTER_FREQ_HZ 400000
-#define OLED_ADDR          0x3C
 
 // Status LED (WS2812B)
 #define STATUS_LED_GPIO        GPIO_NUM_27
@@ -72,24 +68,10 @@ static const char *TAG = "WiFuxx";
 #define BUTTON_RESET_HOLD_MS 10000   // WebUI mode: hold this long to factory-reset (lockout escape)
 #define BUTTON_POLL_MS     20
 
-// Battery sense — the XIAO ESP32-C5 has a built-in /2 divider on GPIO6 (ADC1 ch5),
-// gated by GPIO26 (drive high to enable). No external parts needed. (The bare
-// DevKit has no battery circuit; charge mode there just reads ~nothing.)
-#define BATTERY_ADC_GPIO       GPIO_NUM_6     // BAT_VOLT_PIN
-#define BATTERY_EN_GPIO        GPIO_NUM_26    // BAT_VOLT_PIN_EN — high enables the divider
-#define BATTERY_DIVIDER_RATIO  2              // equal resistors -> battery = node * 2
-#define BATTERY_FULL_MV        4200           // 100%
-#define BATTERY_EMPTY_MV       3300           // 0%
-#define BATTERY_SAMPLES        16             // raw reads averaged per update
-#define BATTERY_EMA_DEN        8              // smoothing: new = old + (sample-old)/N
-#define BATTERY_PRESENT_MIN_MV 2500           // below this we assume no battery/divider
-#define CHARGE_UPDATE_SEC      30             // charge-mode wake interval to refresh the readout
-#define CHARGE_OLED_CONTRAST   0x80           // ~50% — dim the panel in charge mode to save power
-
 // OTA update — the WebUI "Update" card saves home Wi-Fi creds and reboots into OTA
 // mode, which joins the home AP (STA), asks GitHub for the latest release tag, and
 // (if newer) flashes the release asset into the inactive OTA slot. Single-radio, so
-// like WebUI/CHARGE this is a dedicated boot mode with OLED progress — no AP+STA.
+// like WebUI this is a dedicated boot mode with serial progress — no AP+STA.
 #define OTA_GITHUB_OWNER    "stokemctoke"
 #define OTA_GITHUB_REPO     "WiFuxx_ESP32-C5-Auto-Dualband-Deauth"
 #define OTA_ASSET_NAME      "WiFuxx_Dualband_Deauther.bin"  // must match the release asset
@@ -105,7 +87,6 @@ static const char *TAG = "WiFuxx";
 #define BOOT_MODE_MAGIC    0x57463232u   // 'WF22'
 #define BOOT_MODE_ATTACK   0u
 #define BOOT_MODE_WEBUI    1u
-#define BOOT_MODE_CHARGE   2u            // low-power: Wi-Fi off, just charge the battery
 #define BOOT_MODE_OTA      3u            // STA -> home AP -> check GitHub -> OTA update
 #define SEL_MODE_ALL       0u            // attack all targets above threshold (autonomous default)
 #define SEL_MODE_SINGLE    1u            // attack only g_sel_mac (ignores threshold)
@@ -148,17 +129,13 @@ typedef struct {
 } display_info_t;
 static display_info_t current_display_info = {0};
 
-// When true, display_task renders the WebUI "connect to" screen instead of the
-// scan/attack screen. Set once at boot in WebUI mode (mode is fixed per boot).
+// True in WebUI mode (vs scan/attack); status_log_task uses it to pick what to
+// log. Set once at boot in WebUI mode (mode is fixed per boot).
 static volatile bool g_webui_display = false;
 
-// Set by the 10s-BOOT-hold factory reset so display_task shows a confirmation
-// screen before the device reboots (otherwise the reset is silent).
+// Set by the 10s-BOOT-hold factory reset so status_log_task announces the reset
+// on the serial console before the device reboots (otherwise it's silent).
 static volatile bool g_webui_resetting = false;
-
-// Set after the first battery sample — true on the XIAO (divider present), false on
-// a bare DevKit. Gates Charge Mode in the WebUI and on /charge.
-static bool g_battery_present = false;
 
 // Deauth reason codes
 static const uint16_t deauth_reasons[] = {
@@ -169,7 +146,7 @@ static const uint8_t num_reasons = sizeof(deauth_reasons) / sizeof(deauth_reason
 // ==================== Status LED ====================
 // Color signals on a single WS2812B at STATUS_LED_GPIO, scaled to 25% brightness.
 //   BOOT         : solid blue        — chip powering up
-//   WIFI_INIT    : solid magenta     — bringing up Wi-Fi / OLED
+//   WIFI_INIT    : solid magenta     — bringing up Wi-Fi
 //   SCANNING     : cyan fast pulse   — scanning for networks
 //   NO_TARGETS   : yellow slow blink — scan complete, nothing strong enough, retrying
 //   TARGETS_FOUND: solid green       — targets locked, attack about to start
@@ -188,12 +165,8 @@ typedef enum {
 static volatile led_state_t led_state = LED_STATE_BOOT;
 static led_strip_handle_t   status_led = NULL;
 
-#include "boot_bitmap.h"
-#include "gallus_bitmap.h"
-#include "gallus_flash_bitmap.h"
-#include "gg_logo_bitmap.h"
-#include "monitor_bitmap.h"
-#include "favicon.h"
+#include "monitor_bitmap.h"   // ASCII boot splash on the serial console
+#include "favicon.h"          // WebUI favicon
 
 // ==================== Status LED Driver ====================
 static void status_led_init(void) {
@@ -309,270 +282,6 @@ static void status_led_task(void *pvParameters) {
     }
 }
 
-// ==================== SSD1306 Framebuffer Driver ====================
-// All drawing is done in-memory; oled_flush() sends only dirty pages.
-// Each page flush uses 2 I2C transactions instead of 131, reducing a
-// full screen refresh from ~2000 transactions to at most 16.
-
-static uint8_t  fb[8][128];
-static bool     page_dirty[8];
-
-static void i2c_master_init(void) {
-    i2c_config_t conf = {
-        .mode             = I2C_MODE_MASTER,
-        .sda_io_num       = I2C_MASTER_SDA_IO,
-        .scl_io_num       = I2C_MASTER_SCL_IO,
-        .sda_pullup_en    = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en    = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = I2C_MASTER_FREQ_HZ,
-    };
-    ESP_ERROR_CHECK(i2c_param_config(I2C_MASTER_NUM, &conf));
-    ESP_ERROR_CHECK(i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0));
-}
-
-// Send multiple commands in one I2C transaction (control byte 0x00 = command stream)
-static void oled_send_cmds(const uint8_t *cmds, size_t len) {
-    uint8_t buf[64];
-    if (len + 1 > sizeof(buf)) return;
-    buf[0] = 0x00;
-    memcpy(buf + 1, cmds, len);
-    esp_err_t err = i2c_master_write_to_device(I2C_MASTER_NUM, OLED_ADDR, buf, len + 1,
-                                               pdMS_TO_TICKS(100));
-    if (err != ESP_OK)
-        ESP_LOGW(TAG, "OLED cmd I2C write failed: %s", esp_err_to_name(err));
-}
-
-// Flush one page to hardware: 1 command transaction + 1 data transaction
-static void oled_flush_page(uint8_t page) {
-    uint8_t cmds[] = {0xB0 + page, 0x00, 0x10};
-    oled_send_cmds(cmds, sizeof(cmds));
-
-    uint8_t buf[129];
-    buf[0] = 0x40;  // data stream control byte
-    memcpy(buf + 1, fb[page], 128);
-    esp_err_t err = i2c_master_write_to_device(I2C_MASTER_NUM, OLED_ADDR, buf, 129,
-                                               pdMS_TO_TICKS(100));
-    if (err != ESP_OK)
-        ESP_LOGW(TAG, "OLED data I2C write failed (page %u): %s", page, esp_err_to_name(err));
-    page_dirty[page] = false;
-}
-
-static void oled_flush(void) {
-    for (uint8_t p = 0; p < 8; p++) {
-        if (page_dirty[p]) oled_flush_page(p);
-    }
-}
-
-static void oled_clear_page(uint8_t page) {
-    memset(fb[page], 0, 128);
-    page_dirty[page] = true;
-}
-
-static void oled_clear_screen(void) {
-    memset(fb, 0, sizeof(fb));
-    memset(page_dirty, true, sizeof(page_dirty));
-    oled_flush();
-}
-
-static void oled_init(void) {
-    i2c_master_init();
-    vTaskDelay(pdMS_TO_TICKS(100));
-    static const uint8_t init_cmds[] = {
-        0xAE, 0x20, 0x00, 0xB0, 0xC8, 0x00, 0x10, 0x40,
-        0x81, 0xFF, 0xA1, 0xA6, 0xA8, 0x3F, 0xA4, 0xD3,
-        0x00, 0xD5, 0xF0, 0xD9, 0x22, 0xDA, 0x12, 0xDB,
-        0x20, 0x8D, 0x14, 0xAF
-    };
-    oled_send_cmds(init_cmds, sizeof(init_cmds));
-    memset(fb, 0, sizeof(fb));
-    memset(page_dirty, true, sizeof(page_dirty));
-    oled_flush();
-}
-
-// SSD1306 contrast (0x81). Used to fade the splash in/out without redrawing.
-static void oled_set_contrast(uint8_t level) {
-    uint8_t cmds[] = { 0x81, level };
-    oled_send_cmds(cmds, sizeof(cmds));
-}
-
-static void oled_draw_char(uint8_t x, uint8_t page, char c) {
-    if (c < 32 || c > 126) c = 32;
-    if (x + 8 > 128) return;
-    static const uint8_t font8x8[96][8] = {
-        {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
-        {0x00,0x00,0x5F,0x00,0x00,0x00,0x00,0x00},
-        {0x00,0x07,0x00,0x07,0x00,0x00,0x00,0x00},
-        {0x14,0x7F,0x14,0x7F,0x14,0x00,0x00,0x00},
-        {0x24,0x2A,0x7F,0x2A,0x12,0x00,0x00,0x00},
-        {0x23,0x13,0x08,0x64,0x62,0x00,0x00,0x00},
-        {0x36,0x49,0x55,0x22,0x50,0x00,0x00,0x00},
-        {0x00,0x05,0x03,0x00,0x00,0x00,0x00,0x00},
-        {0x00,0x1C,0x22,0x41,0x00,0x00,0x00,0x00},
-        {0x00,0x41,0x22,0x1C,0x00,0x00,0x00,0x00},
-        {0x14,0x08,0x3E,0x08,0x14,0x00,0x00,0x00},
-        {0x08,0x08,0x3E,0x08,0x08,0x00,0x00,0x00},
-        {0x00,0x50,0x30,0x00,0x00,0x00,0x00,0x00},
-        {0x08,0x08,0x08,0x08,0x08,0x00,0x00,0x00},
-        {0x00,0x60,0x60,0x00,0x00,0x00,0x00,0x00},
-        {0x20,0x10,0x08,0x04,0x02,0x00,0x00,0x00},
-        {0x3E,0x51,0x49,0x45,0x3E,0x00,0x00,0x00},
-        {0x00,0x42,0x7F,0x40,0x00,0x00,0x00,0x00},
-        {0x42,0x61,0x51,0x49,0x46,0x00,0x00,0x00},
-        {0x21,0x41,0x45,0x4B,0x31,0x00,0x00,0x00},
-        {0x18,0x14,0x12,0x7F,0x10,0x00,0x00,0x00},
-        {0x27,0x45,0x45,0x45,0x39,0x00,0x00,0x00},
-        {0x3C,0x4A,0x49,0x49,0x30,0x00,0x00,0x00},
-        {0x01,0x71,0x09,0x05,0x03,0x00,0x00,0x00},
-        {0x36,0x49,0x49,0x49,0x36,0x00,0x00,0x00},
-        {0x06,0x49,0x49,0x29,0x1E,0x00,0x00,0x00},
-        {0x00,0x36,0x36,0x00,0x00,0x00,0x00,0x00},
-        {0x00,0x56,0x36,0x00,0x00,0x00,0x00,0x00},
-        {0x08,0x14,0x22,0x41,0x00,0x00,0x00,0x00},
-        {0x14,0x14,0x14,0x14,0x14,0x00,0x00,0x00},
-        {0x00,0x41,0x22,0x14,0x08,0x00,0x00,0x00},
-        {0x02,0x01,0x51,0x09,0x06,0x00,0x00,0x00},
-        {0x32,0x49,0x79,0x41,0x3E,0x00,0x00,0x00},
-        {0x7E,0x11,0x11,0x11,0x7E,0x00,0x00,0x00},
-        {0x7F,0x49,0x49,0x49,0x36,0x00,0x00,0x00},
-        {0x3E,0x41,0x41,0x41,0x22,0x00,0x00,0x00},
-        {0x7F,0x41,0x41,0x22,0x1C,0x00,0x00,0x00},
-        {0x7F,0x49,0x49,0x49,0x41,0x00,0x00,0x00},
-        {0x7F,0x09,0x09,0x09,0x01,0x00,0x00,0x00},
-        {0x3E,0x41,0x49,0x49,0x7A,0x00,0x00,0x00},
-        {0x7F,0x08,0x08,0x08,0x7F,0x00,0x00,0x00},
-        {0x00,0x41,0x7F,0x41,0x00,0x00,0x00,0x00},
-        {0x20,0x40,0x41,0x3F,0x01,0x00,0x00,0x00},
-        {0x7F,0x08,0x14,0x22,0x41,0x00,0x00,0x00},
-        {0x7F,0x40,0x40,0x40,0x40,0x00,0x00,0x00},
-        {0x7F,0x02,0x0C,0x02,0x7F,0x00,0x00,0x00},
-        {0x7F,0x04,0x08,0x10,0x7F,0x00,0x00,0x00},
-        {0x3E,0x41,0x41,0x41,0x3E,0x00,0x00,0x00},
-        {0x7F,0x09,0x09,0x09,0x06,0x00,0x00,0x00},
-        {0x3E,0x41,0x51,0x21,0x5E,0x00,0x00,0x00},
-        {0x7F,0x09,0x19,0x29,0x46,0x00,0x00,0x00},
-        {0x46,0x49,0x49,0x49,0x31,0x00,0x00,0x00},
-        {0x01,0x01,0x7F,0x01,0x01,0x00,0x00,0x00},
-        {0x3F,0x40,0x40,0x40,0x3F,0x00,0x00,0x00},
-        {0x1F,0x20,0x40,0x20,0x1F,0x00,0x00,0x00},
-        {0x3F,0x40,0x38,0x40,0x3F,0x00,0x00,0x00},
-        {0x63,0x14,0x08,0x14,0x63,0x00,0x00,0x00},
-        {0x07,0x08,0x70,0x08,0x07,0x00,0x00,0x00},
-        {0x61,0x51,0x49,0x45,0x43,0x00,0x00,0x00},
-        {0x00,0x7F,0x41,0x41,0x00,0x00,0x00,0x00},
-        {0x02,0x04,0x08,0x10,0x20,0x00,0x00,0x00},
-        {0x00,0x41,0x41,0x7F,0x00,0x00,0x00,0x00},
-        {0x04,0x02,0x01,0x02,0x04,0x00,0x00,0x00},
-        {0x40,0x40,0x40,0x40,0x40,0x00,0x00,0x00},
-        {0x00,0x01,0x02,0x04,0x00,0x00,0x00,0x00},
-        {0x20,0x54,0x54,0x54,0x78,0x00,0x00,0x00},
-        {0x7F,0x48,0x44,0x44,0x38,0x00,0x00,0x00},
-        {0x38,0x44,0x44,0x44,0x20,0x00,0x00,0x00},
-        {0x38,0x44,0x44,0x48,0x7F,0x00,0x00,0x00},
-        {0x38,0x54,0x54,0x54,0x18,0x00,0x00,0x00},
-        {0x08,0x7E,0x09,0x01,0x02,0x00,0x00,0x00},
-        {0x0C,0x52,0x52,0x52,0x3E,0x00,0x00,0x00},
-        {0x7F,0x08,0x04,0x04,0x78,0x00,0x00,0x00},
-        {0x00,0x44,0x7D,0x40,0x00,0x00,0x00,0x00},
-        {0x20,0x40,0x44,0x3D,0x00,0x00,0x00,0x00},
-        {0x7F,0x10,0x28,0x44,0x00,0x00,0x00,0x00},
-        {0x00,0x41,0x7F,0x40,0x00,0x00,0x00,0x00},
-        {0x7C,0x04,0x18,0x04,0x78,0x00,0x00,0x00},
-        {0x7C,0x08,0x04,0x04,0x78,0x00,0x00,0x00},
-        {0x38,0x44,0x44,0x44,0x38,0x00,0x00,0x00},
-        {0x7C,0x14,0x14,0x14,0x08,0x00,0x00,0x00},
-        {0x08,0x14,0x14,0x18,0x7C,0x00,0x00,0x00},
-        {0x7C,0x08,0x04,0x04,0x08,0x00,0x00,0x00},
-        {0x48,0x54,0x54,0x54,0x20,0x00,0x00,0x00},
-        {0x04,0x3F,0x44,0x40,0x20,0x00,0x00,0x00},
-        {0x3C,0x40,0x40,0x20,0x7C,0x00,0x00,0x00},
-        {0x1C,0x20,0x40,0x20,0x1C,0x00,0x00,0x00},
-        {0x3C,0x40,0x30,0x40,0x3C,0x00,0x00,0x00},
-        {0x44,0x28,0x10,0x28,0x44,0x00,0x00,0x00},
-        {0x0C,0x50,0x50,0x50,0x3C,0x00,0x00,0x00},
-        {0x44,0x64,0x54,0x4C,0x44,0x00,0x00,0x00},
-        {0x00,0x08,0x36,0x41,0x00,0x00,0x00,0x00},
-        {0x00,0x00,0x7F,0x00,0x00,0x00,0x00,0x00},
-        {0x00,0x41,0x36,0x08,0x00,0x00,0x00,0x00},
-        {0x10,0x08,0x10,0x08,0x00,0x00,0x00,0x00},
-    };
-    memcpy(fb[page] + x, font8x8[c - 32], 8);
-    page_dirty[page] = true;
-}
-
-static void oled_draw_string(uint8_t x, uint8_t page, const char *str) {
-    while (*str && x + 8 <= 128) {
-        oled_draw_char(x, page, *str++);
-        x += 8;
-    }
-}
-
-// Converts row-major MSB-first bitmap into SSD1306 page format and renders it
-// Render a 128x64 row-major MSB-first bitmap (16 bytes/row) to the framebuffer.
-static void oled_draw_bitmap_fullscreen(const uint8_t *bmp) {
-    for (int p = 0; p < 8; p++) {
-        for (int x = 0; x < 128; x++) {
-            uint8_t val = 0;
-            for (int bit = 0; bit < 8; bit++) {
-                int row = p * 8 + bit;
-                if (bmp[row * 16 + x / 8] & (0x80 >> (x % 8)))
-                    val |= (1 << bit);
-            }
-            fb[p][x] = val;
-        }
-        page_dirty[p] = true;
-    }
-    oled_flush();
-}
-
-// Boot sequence: "studio intro -> title card" — the Gallus Gadgets brand
-// animates in (gg logo fades up, then the wordmark flashes), then the
-// WiFuxx product logo + the WebUI hint / disclaimer, before handing off to
-// scanning. The BOOT-hold works the whole time the device is attacking, so this
-// screen is purely a heads-up — we have all the time we need here.
-static void oled_display_text_intro(void) {
-    // -- Gallus Gadgets: gg logo fades in via the contrast register --
-    // Quadratic ease-in (level ~ i^2) so it emerges slowly from near-black and
-    // brightens smoothly — many small steps keep the ramp gradient-smooth.
-    oled_set_contrast(0x00);
-    oled_draw_bitmap_fullscreen(gg_logo_bitmap);
-    const int fade_steps = 64;
-    for (int i = 0; i <= fade_steps; i++) {
-        int level = (i * i * 255) / (fade_steps * fade_steps);
-        oled_set_contrast((uint8_t)level);
-        vTaskDelay(pdMS_TO_TICKS(11));
-    }
-    oled_set_contrast(0xFF);
-    vTaskDelay(pdMS_TO_TICKS(1600));
-
-    // -- Gallus Gadgets wordmark: settle, then flash/pop (normal <-> inverted) --
-    oled_draw_bitmap_fullscreen(gallus_bitmap);
-    vTaskDelay(pdMS_TO_TICKS(300));
-    for (int i = 0; i < 3; i++) {
-        oled_draw_bitmap_fullscreen(gallus_flash_bitmap);
-        vTaskDelay(pdMS_TO_TICKS(55));
-        oled_draw_bitmap_fullscreen(gallus_bitmap);
-        vTaskDelay(pdMS_TO_TICKS(70));
-    }
-    vTaskDelay(pdMS_TO_TICKS(450));
-
-    // -- WiFuxx product logo --
-    oled_draw_bitmap_fullscreen(boot_bitmap);
-    vTaskDelay(pdMS_TO_TICKS(2400));
-
-    oled_clear_screen();
-    oled_draw_string(0, 0, ">> WiFuxx");
-    oled_draw_string(0, 1, "Dual-Band Deauth");
-
-    oled_draw_string(0, 3, "Hold BOOT btn");
-    oled_draw_string(0, 4, "2s for WebUI");
-
-    oled_draw_string(0, 6, "Use your own");
-    oled_draw_string(0, 7, "nets only :P");
-    oled_flush();
-    vTaskDelay(pdMS_TO_TICKS(3200));
-    oled_clear_screen();
-}
-
 // ==================== Deauth Frame ====================
 typedef struct {
     uint8_t  frame_ctrl[2];
@@ -654,7 +363,6 @@ static void boot_mode_init(void) {
         g_sel_ssid[0] = '\0';
     }
     const char *mode_name = g_boot_mode == BOOT_MODE_WEBUI  ? "WEBUI"
-                          : g_boot_mode == BOOT_MODE_CHARGE ? "CHARGE"
                           : g_boot_mode == BOOT_MODE_OTA    ? "OTA" : "ATTACK";
     ESP_LOGI(TAG, "Boot mode: %s (reset reason %d)", mode_name, (int)reason);
 }
@@ -666,7 +374,7 @@ static void reboot_into(uint32_t mode) {
     g_boot_magic = BOOT_MODE_MAGIC;
     g_boot_mode  = mode;
     ESP_LOGW(TAG, "Rebooting into %s mode",
-             mode == BOOT_MODE_WEBUI ? "WEBUI" : mode == BOOT_MODE_CHARGE ? "CHARGE"
+             mode == BOOT_MODE_WEBUI ? "WEBUI"
              : mode == BOOT_MODE_OTA ? "OTA" : "ATTACK");
     vTaskDelay(pdMS_TO_TICKS(150));  // let any in-flight HTTP response / log flush
     esp_restart();
@@ -1133,45 +841,35 @@ static void autonomous_mode_task(void *pvParameters) {
     }
 }
 
-// Battery sense — defined later (near app_main); also drawn live on the display.
-static void battery_update(void);
-static void battery_draw_glyph(uint8_t x0, uint8_t page);
-
-// ==================== Display Task ====================
-static void display_task(void *pvParameters) {
+// On the DevBoard there's no OLED, so scan/attack state goes to the serial
+// console instead. The attack/scan tasks still publish into current_display_info
+// (under display_mutex); this task mirrors it to the log, only emitting a line
+// when something actually changes so the console doesn't flood.
+static void status_log_task(void *pvParameters) {
     display_info_t info;
-    char line_buf[17];
-    uint8_t scroll_index  = 0;
-    const int max_ssid_lines = 5;
+    char status_prev[sizeof(info.status)] = "";
+    int  c24_prev = -1, c5_prev = -1;
+    bool reset_logged = false;
 
-    if (!g_webui_display && !g_settings.skip_splash) oled_display_text_intro();
+    // In WebUI mode the panel itself is the interface; just announce how to reach it.
+    if (g_webui_display) {
+        ESP_LOGI(TAG, "WebUI up — join '%s', open http://%s or http://%s.local",
+                 g_settings.ap_ssid, WEBUI_AP_IP, WEBUI_MDNS_HOST);
+    }
 
     while (1) {
-        // WebUI factory-reset confirmation (10s BOOT hold) — shown before reboot.
+        // Factory-reset (10s BOOT hold in WebUI) — announced once before the reboot.
         if (g_webui_resetting) {
-            for (int p = 0; p < 8; p++) oled_clear_page(p);
-            oled_draw_string(0, 1, ">> FACTORY RESET");
-            oled_draw_string(0, 3, "Settings wiped");
-            oled_draw_string(0, 4, "to defaults.");
-            oled_draw_string(0, 6, "Restarting...");
-            oled_flush();
+            if (!reset_logged) {
+                ESP_LOGW(TAG, ">> FACTORY RESET — settings wiped to defaults, restarting...");
+                reset_logged = true;
+            }
             vTaskDelay(pdMS_TO_TICKS(200));
             continue;
         }
 
-        // WebUI mode: static "connect to" screen, per the v2 spec.
-        if (g_webui_display) {
-            for (int p = 0; p < 8; p++) oled_clear_page(p);
-            oled_draw_string(0, 0, ">> WiFuxx WebUI");
-            oled_draw_string(0, 2, "Connect to:");
-            oled_draw_string(0, 3, g_settings.ap_ssid);
-            oled_draw_string(0, 5, "http://");
-            oled_draw_string(0, 6, WEBUI_AP_IP);
-            oled_draw_string(0, 7, "or " WEBUI_MDNS_HOST ".local");
-            oled_flush();
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            continue;
-        }
+        // WebUI mode has no live scan/attack status to mirror.
+        if (g_webui_display) { vTaskDelay(pdMS_TO_TICKS(1000)); continue; }
 
         if (display_mutex) {
             xSemaphoreTake(display_mutex, portMAX_DELAY);
@@ -1179,40 +877,18 @@ static void display_task(void *pvParameters) {
             xSemaphoreGive(display_mutex);
         }
 
-        oled_clear_page(0);
-        oled_draw_string(0, 0, ">> DEAUTHER");
-        // Live battery glyph, top-right — refresh the reading every few seconds.
-        static uint32_t last_batt_s = 0;
-        uint32_t now_s = get_time_sec();
-        if (last_batt_s == 0 || now_s - last_batt_s >= 5) { battery_update(); last_batt_s = now_s; }
-        battery_draw_glyph(113, 0);
-
-        oled_clear_page(1);
-        snprintf(line_buf, sizeof(line_buf), "2.4G:%d 5G:%d", info.ap_count_24, info.ap_count_5);
-        oled_draw_string(0, 1, line_buf);
-
-        oled_clear_page(2);
-        oled_draw_string(0, 2, info.status);
-
-        for (int row = 3; row <= 7; row++) oled_clear_page(row);
-
-        if (info.ssid_count > 0) {
-            int visible = (info.ssid_count > max_ssid_lines)
-                        ? max_ssid_lines : info.ssid_count;
-            if (info.ssid_count > max_ssid_lines)
-                scroll_index = (scroll_index + 1) % info.ssid_count;
-            else
-                scroll_index = 0;
-
-            for (int i = 0; i < visible; i++) {
-                int idx = (scroll_index + i) % info.ssid_count;
-                strncpy(line_buf, info.ssid_list[idx], 16);
-                line_buf[16] = '\0';
-                oled_draw_string(0, 3 + i, line_buf);
-            }
+        bool changed = strncmp(info.status, status_prev, sizeof(status_prev)) != 0 ||
+                       info.ap_count_24 != c24_prev || info.ap_count_5 != c5_prev;
+        if (changed) {
+            ESP_LOGI(TAG, "[%s] APs 2.4G:%d 5G:%d", info.status, info.ap_count_24, info.ap_count_5);
+            for (int i = 0; i < info.ssid_count && i < 8; i++)
+                ESP_LOGI(TAG, "  target: %s", info.ssid_list[i]);
+            memcpy(status_prev, info.status, sizeof(status_prev));
+            status_prev[sizeof(status_prev) - 1] = '\0';
+            c24_prev = info.ap_count_24;
+            c5_prev  = info.ap_count_5;
         }
 
-        oled_flush();  // single batch flush for all dirty pages
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
@@ -1306,13 +982,13 @@ static const char WEBUI_HTML[] =
 "<div class='card'><h2>Scan</h2><div class='scan-row'><button class='btn btn-cyan' id='scan'>SCAN</button><span id='scanmsg'>Tap SCAN to discover networks.</span></div></div>\n"
 "<div class='card'><h2>Attack</h2><button class='btn btn-orange' id='all'>DEAUTH ALL</button></div>\n"
 "<div class='card'><h2>Networks</h2><div id='netlist'><p class='empty'>No scan yet.</p></div></div>\n"
-"<div class='card'><h2>Power</h2><button class='btn btn-cyan' id='auto'>AUTO MODE</button><button class='btn btn-cyan' id='charge'>CHARGE MODE</button></div>\n"
+"<div class='card'><h2>Power</h2><button class='btn btn-cyan' id='auto'>AUTO MODE</button></div>\n"
 "<div class='card'><h2>Update</h2>\n"
 "<p id='fwver' class='empty' style='text-align:left;margin-bottom:.9rem'>Firmware --</p>\n"
 "<label>Home Wi-Fi SSID<input id='home_ssid' maxlength='32'></label>\n"
 "<label>Home Wi-Fi password<input id='home_pass' type='password' maxlength='63' placeholder='unchanged'></label>\n"
 "<button class='btn btn-orange' id='update'>CHECK FOR UPDATE</button>\n"
-"<p class='empty' style='text-align:left;margin-top:.7rem'>Unit reboots, joins your Wi-Fi, and checks GitHub for a newer release. Watch the device screen for progress.</p>\n"
+"<p class='empty' style='text-align:left;margin-top:.7rem'>Unit reboots, joins your Wi-Fi, and checks GitHub for a newer release. Watch the serial console for progress.</p>\n"
 "</div>\n"
 "<div class='card'><h2>Settings</h2>\n"
 "<label>AP SSID<input id='ap_ssid' maxlength='32'></label>\n"
@@ -1380,25 +1056,19 @@ static const char WEBUI_HTML[] =
 "  if(t.dataset.mac)attack({mode:'single',mac:t.dataset.mac});\n"
 "  else if(t.dataset.ssid)attack({mode:'dualband',ssid:t.dataset.ssid});\n"
 "};\n"
-"document.getElementById('charge').onclick=()=>{\n"
-"  if(!confirm('Enter Charge Mode? Wi-Fi turns off and the unit charges quietly. Unplug when the XIAO charge LED goes out; use the power switch to run it again.'))return;\n"
-"  toast('Charge mode \\u2014 Wi-Fi off. Unplug when the XIAO C LED goes out.');\n"
-"  fetch('/charge',{method:'POST'}).catch(()=>{});\n"
-"};\n"
 "const $=id=>document.getElementById(id);\n"
 "$('update').onclick=()=>{\n"
 "  const s=$('home_ssid').value.trim();\n"
 "  if(!s){toast('Enter your home Wi-Fi SSID first');return;}\n"
-"  if(!confirm('Reboot and check for a firmware update? The unit leaves the WebUI, joins your Wi-Fi, and updates only if a newer release exists. Watch the device screen.'))return;\n"
+"  if(!confirm('Reboot and check for a firmware update? The unit leaves the WebUI, joins your Wi-Fi, and updates only if a newer release exists. Watch the serial console.'))return;\n"
 "  const b={ssid:s};if($('home_pass').value)b.pass=$('home_pass').value;\n"
-"  toast('Rebooting to check for updates \\u2014 watch the device screen.');\n"
+"  toast('Rebooting to check for updates \\u2014 watch the serial console.');\n"
 "  fetch('/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).catch(()=>{});\n"
 "};\n"
 "function loadCfg(){fetch('/config').then(r=>r.json()).then(c=>{\n"
 "  $('ap_ssid').value=c.ap_ssid;$('ap_channel').value=c.ap_channel;$('thr_24').value=c.thr_24;$('thr_5').value=c.thr_5;\n"
 "  $('burst_24').value=c.burst_24;$('burst_5').value=c.burst_5;$('ui_user').value=c.ui_user;$('skip_splash').checked=c.skip_splash;\n"
 "  $('home_ssid').value=c.home_ssid||'';if($('fwver'))$('fwver').textContent='Firmware v'+(c.fw||'?');\n"
-"  if(!c.has_battery){const ch=$('charge');if(ch)ch.style.display='none';}\n"
 "}).catch(()=>{});}\n"
 "loadCfg();\n"
 "$('cfgsave').onclick=()=>{\n"
@@ -1616,7 +1286,6 @@ static esp_err_t config_get_handler(httpd_req_t *req) {
     cJSON_AddNumberToObject(o, "burst_5",     g_settings.burst_5);
     cJSON_AddStringToObject(o, "ui_user",     g_settings.ui_user);
     cJSON_AddBoolToObject  (o, "skip_splash", g_settings.skip_splash);
-    cJSON_AddBoolToObject  (o, "has_battery", g_battery_present);
     cJSON_AddStringToObject(o, "home_ssid",   g_settings.home_ssid);   // home_pass never sent back
     cJSON_AddStringToObject(o, "fw",          fw_version());
 
@@ -1687,23 +1356,6 @@ static esp_err_t config_reset_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// POST /charge — reboot into low-power CHARGE mode (Wi-Fi off). Leaving it is the
-// board's power switch, so there's no in-band way back; the UI confirms first.
-static esp_err_t charge_post_handler(httpd_req_t *req) {
-    if (!webui_authorized(req)) return ESP_OK;
-    if (!g_battery_present) {
-        httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"error\":\"no battery hardware\"}");
-        return ESP_OK;
-    }
-    ESP_LOGW(TAG, "WebUI charge request -> reboot into CHARGE");
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"ok\":true}");
-    reboot_into(BOOT_MODE_CHARGE);  // short delay (response flush) then esp_restart()
-    return ESP_OK;                  // not reached
-}
-
 // POST /auto — reboot into autonomous attack (threshold scan, no WebUI pick).
 static esp_err_t auto_post_handler(httpd_req_t *req) {
     if (!webui_authorized(req)) return ESP_OK;
@@ -1768,7 +1420,7 @@ static httpd_handle_t http_server = NULL;
 static void http_server_start(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_open_sockets = 7;    // LWIP cap: httpd reserves 3, so 7 is the safe max
-    config.max_uri_handlers = 12;   // we register 10; headroom for future routes
+    config.max_uri_handlers = 12;   // we register 9; headroom for future routes
     config.task_priority    = 4;
     config.stack_size       = 8192;
     config.lru_purge_enable = true;
@@ -1786,7 +1438,6 @@ static void http_server_start(void) {
         { .uri = "/config",       .method = HTTP_GET,  .handler = config_get_handler  },
         { .uri = "/config",       .method = HTTP_POST, .handler = config_post_handler },
         { .uri = "/config/reset", .method = HTTP_POST, .handler = config_reset_handler },
-        { .uri = "/charge",       .method = HTTP_POST, .handler = charge_post_handler },
         { .uri = "/auto",         .method = HTTP_POST, .handler = auto_post_handler },
         { .uri = "/update",       .method = HTTP_POST, .handler = update_post_handler },
     };
@@ -1917,7 +1568,7 @@ static void webui_button_task(void *pvParameters) {
             if (held_ms >= BUTTON_RESET_HOLD_MS) {
                 ESP_LOGW(TAG, "BOOT held %lums in WebUI -> FACTORY RESET", (unsigned long)held_ms);
                 settings_reset();
-                g_webui_resetting = true;            // display_task shows confirmation
+                g_webui_resetting = true;            // status_log_task announces it
                 vTaskDelay(pdMS_TO_TICKS(2500));     // let the user read it
                 reboot_into(BOOT_MODE_WEBUI);        // come back up fresh + open
             }
@@ -1941,177 +1592,23 @@ static void log_boot_splash(void) {
     }
 }
 
-// ==================== Battery Sense + Charge Mode ====================
-#include "esp_adc/adc_oneshot.h"
-#include "esp_adc/adc_cali.h"
-#include "esp_adc/adc_cali_scheme.h"
-#include "esp_sleep.h"
-
-static adc_oneshot_unit_handle_t batt_adc  = NULL;
-static adc_cali_handle_t         batt_cali = NULL;
-static adc_channel_t             batt_chan;
-static int  batt_mv    = 0;       // smoothed battery millivolts
-static bool batt_valid = false;
-
-static void battery_init(void) {
-    // GPIO26 enables the XIAO's on-board divider; keep it low until we sample.
-    gpio_config_t en = { .pin_bit_mask = 1ULL << BATTERY_EN_GPIO, .mode = GPIO_MODE_OUTPUT };
-    gpio_config(&en);
-    gpio_set_level(BATTERY_EN_GPIO, 0);
-
-    adc_unit_t unit;
-    if (adc_oneshot_io_to_channel(BATTERY_ADC_GPIO, &unit, &batt_chan) != ESP_OK || unit != ADC_UNIT_1) {
-        ESP_LOGE(TAG, "Battery: GPIO%d is not an ADC1 pin", BATTERY_ADC_GPIO);
-        return;
-    }
-    adc_oneshot_unit_init_cfg_t ucfg = { .unit_id = ADC_UNIT_1 };
-    if (adc_oneshot_new_unit(&ucfg, &batt_adc) != ESP_OK) { batt_adc = NULL; return; }
-
-    adc_oneshot_chan_cfg_t ccfg = { .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_DEFAULT };
-    adc_oneshot_config_channel(batt_adc, batt_chan, &ccfg);
-
-    adc_cali_curve_fitting_config_t cal = {
-        .unit_id = ADC_UNIT_1, .chan = batt_chan,
-        .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_DEFAULT,
-    };
-    if (adc_cali_create_scheme_curve_fitting(&cal, &batt_cali) != ESP_OK) {
-        ESP_LOGW(TAG, "Battery: ADC calibration unavailable; readings approximate");
-        batt_cali = NULL;
-    }
-    ESP_LOGI(TAG, "Battery sense on GPIO%d (ADC1 ch%d), enable GPIO%d",
-             BATTERY_ADC_GPIO, (int)batt_chan, BATTERY_EN_GPIO);
-}
-
-// Enable the divider, average a burst, convert to mV, undo the /2, low-pass with
-// an EMA, then disable the divider again to stop its drain.
-static void battery_update(void) {
-    if (!batt_adc) return;
-    gpio_set_level(BATTERY_EN_GPIO, 1);
-    vTaskDelay(pdMS_TO_TICKS(20));   // let the RC divider settle
-
-    int acc = 0, n = 0, raw;
-    for (int i = 0; i < BATTERY_SAMPLES; i++)
-        if (adc_oneshot_read(batt_adc, batt_chan, &raw) == ESP_OK) { acc += raw; n++; }
-
-    gpio_set_level(BATTERY_EN_GPIO, 0);
-    if (n == 0) return;
-
-    int raw_avg = acc / n, mv_node;
-    if (batt_cali) {
-        if (adc_cali_raw_to_voltage(batt_cali, raw_avg, &mv_node) != ESP_OK) return;
-    } else {
-        mv_node = raw_avg * 3300 / 4095;   // rough fallback if uncalibrated
-    }
-    int sample_mv = mv_node * BATTERY_DIVIDER_RATIO;
-    batt_mv = batt_valid ? batt_mv + (sample_mv - batt_mv) / BATTERY_EMA_DEN : sample_mv;
-    batt_valid = true;
-    g_battery_present = (batt_mv >= BATTERY_PRESENT_MIN_MV);
-}
-
-// Approximate single-cell LiPo resting-voltage -> state-of-charge curve. The top
-// is nudged so a freshly-charged cell (~4.1 V at rest) reads near full. Voltage
-// fuel-gauging is an estimate — it sags under the deauth TX bursts, which the EMA
-// rides out — but this tracks the real curve far better than a straight line.
-static const struct { uint16_t mv; uint8_t pct; } lipo_curve[] = {
-    {3270,0},{3600,5},{3700,12},{3730,20},{3750,28},{3770,34},{3790,40},
-    {3820,47},{3850,55},{3870,62},{3910,70},{3950,77},{3990,83},{4060,90},
-    {4110,94},{4160,98},{4200,100},
-};
-
-static int battery_percent(void) {
-    const int n = sizeof(lipo_curve) / sizeof(lipo_curve[0]);
-    int mv = batt_mv;
-    if (mv <= lipo_curve[0].mv)     return 0;
-    if (mv >= lipo_curve[n - 1].mv) return 100;
-    for (int i = 1; i < n; i++) {
-        if (mv < lipo_curve[i].mv) {
-            int lo_mv = lipo_curve[i - 1].mv, hi_mv = lipo_curve[i].mv;
-            int lo_p  = lipo_curve[i - 1].pct, hi_p = lipo_curve[i].pct;
-            return lo_p + (mv - lo_mv) * (hi_p - lo_p) / (hi_mv - lo_mv);
-        }
-    }
-    return 100;
-}
-
-// Draw a ~13x7 px battery icon at column x0 on `page`, fill proportional to %.
-// fb bytes are vertical 8-px columns (bit0 = top row). No-op when no battery is
-// present (e.g. a bare DevKit), so the glyph simply doesn't appear there.
-static void battery_draw_glyph(uint8_t x0, uint8_t page) {
-    if (!batt_valid || batt_mv < BATTERY_PRESENT_MIN_MV || x0 + 13 > 128) return;
-    for (uint8_t i = 0; i < 13; i++) fb[page][x0 + i] = 0;
-    fb[page][x0]      = 0x7F;                                   // left wall (rows 0-6)
-    fb[page][x0 + 10] = 0x7F;                                   // right wall
-    for (uint8_t i = 1; i < 10; i++) fb[page][x0 + i] |= 0x41;  // top + bottom edges
-    fb[page][x0 + 11] = 0x1C;                                   // terminal nub (rows 2-4)
-    fb[page][x0 + 12] = 0x1C;
-    int bars = (battery_percent() * 8 + 50) / 100;             // 0..8 inner columns
-    for (int i = 0; i < bars && i < 8; i++) fb[page][x0 + 2 + i] |= 0x3E;  // fill (rows 1-5)
-    page_dirty[page] = true;
-}
-
-// Charge mode: never starts Wi-Fi. Shows a one-line battery readout, then light-
-// sleeps between refreshes so the SGM40567 charger gets nearly all the current.
-// Exit is the board's power switch (off to store; on = cold boot -> autonomous).
-static void charge_mode_run(void) {
-    ESP_LOGW(TAG, "CHARGE mode: Wi-Fi off. Unplug when the XIAO 'C' LED goes out.");
-    oled_clear_screen();
-    oled_set_contrast(CHARGE_OLED_CONTRAST);   // dim the panel — every mA helps the charge
-    esp_sleep_enable_timer_wakeup((uint64_t)CHARGE_UPDATE_SEC * 1000000ULL);
-
-    char line[17];
-    while (1) {
-        // Wi-Fi is off here, so there's no TX sag to smooth — reset the EMA each
-        // pass so the readout tracks the live battery voltage with no lag.
-        batt_valid = false;
-        battery_update();
-
-        // Single dim line — fewest lit pixels = least OLED draw. The XIAO 'C' LED
-        // is the real charge indicator (out = full).
-        oled_clear_page(0);
-        oled_draw_string(0, 0, ">> CHARGE MODE");
-        oled_clear_page(2);
-        if (batt_valid && batt_mv >= BATTERY_PRESENT_MIN_MV) {
-            int v10 = batt_mv / 10;                 // centivolts
-            if (v10 < 0)   v10 = 0;
-            if (v10 > 999) v10 = 999;               // clamp -> 0.00..9.99 V
-            int pct = battery_percent();
-            if (pct < 0)   pct = 0;
-            if (pct > 100) pct = 100;
-            snprintf(line, sizeof(line), "Batt %d.%02dV %d%%", v10 / 100, v10 % 100, pct);
-        } else {
-            snprintf(line, sizeof(line), "Charging...");
-        }
-        oled_draw_string(0, 2, line);
-        oled_flush();
-
-        esp_light_sleep_start();   // ~CHARGE_UPDATE_SEC; OLED holds the line meanwhile
-    }
-}
-
 // ==================== OTA Update Mode ====================
 // Entered by rebooting into BOOT_MODE_OTA (from the WebUI "Update" card). Joins the
 // saved home AP as a station, asks the GitHub API for the latest release tag, and if
 // it's newer than fw_version() streams the release .bin into the inactive OTA slot
-// via esp_https_ota. All feedback is on the OLED — the phone is disconnected the
-// moment we leave the SoftAP, so there is no live WebUI here by design.
+// via esp_https_ota. All feedback is on the serial console — the phone is
+// disconnected the moment we leave the SoftAP, so there is no live WebUI here by
+// design. The onboard LED also tracks stages (magenta/cyan/red breath).
 
-// Three big centred lines under a fixed ">> OTA UPDATE" header.
+// One serial status line under a fixed ">> OTA UPDATE" prefix.
 static void ota_show(const char *l1, const char *l2, const char *l3) {
-    for (int p = 0; p < 8; p++) oled_clear_page(p);
-    oled_draw_string(0, 0, ">> OTA UPDATE");
-    if (l1) oled_draw_string(0, 2, l1);
-    if (l2) oled_draw_string(0, 4, l2);
-    if (l3) oled_draw_string(0, 6, l3);
-    oled_flush();
+    ESP_LOGI(TAG, ">> OTA UPDATE: %s %s %s",
+             l1 ? l1 : "", l2 ? l2 : "", l3 ? l3 : "");
 }
 
-// esp_https_ota progress -> redraw only the % line so the OLED isn't fully repainted.
+// esp_https_ota progress -> log each new percent.
 static void ota_progress(int pct) {
-    char line[17];
-    snprintf(line, sizeof(line), "Writing %d%%", pct);
-    oled_clear_page(4);
-    oled_draw_string(0, 4, line);
-    oled_flush();
+    ESP_LOGI(TAG, "OTA writing %d%%", pct);
 }
 
 // ---- STA connect to the home AP (event-group handshake) ----
@@ -2231,7 +1728,7 @@ static esp_err_t ota_http_client_init_cb(esp_http_client_handle_t c) {
     return ESP_OK;
 }
 
-// Stream the release asset for `tag` into the inactive OTA slot, driving the OLED %.
+// Stream the release asset for `tag` into the inactive OTA slot, logging the %.
 static bool ota_download_and_flash(const char *tag) {
     char url[256];
     snprintf(url, sizeof(url),
@@ -2304,7 +1801,7 @@ static void ota_mode_run(void) {
     }
 
     const char *cur = fw_version();
-    char l_cur[48], l_new[48];   // oversized; oled_draw_string clips at 16 chars
+    char l_cur[48], l_new[48];
     snprintf(l_cur, sizeof(l_cur), "have %s", cur);
     snprintf(l_new, sizeof(l_new), "new  %s", tag);
     ESP_LOGI(TAG, "OTA: current %s, latest %s", cur, tag);
@@ -2355,34 +1852,25 @@ void app_main(void) {
     led_state = LED_STATE_BOOT;
     xTaskCreate(status_led_task, "status_led", 2048, NULL, 1, NULL);
 
-    // Common peripherals
-    oled_init();
+    // Shared state for the attack/scan tasks and the serial status logger.
     display_mutex = xSemaphoreCreateMutex();
     if (!display_mutex)
         ESP_LOGE(TAG, "display_mutex create failed");
-    battery_init();
-    battery_update();
-    g_battery_present = batt_valid && (batt_mv >= BATTERY_PRESENT_MIN_MV);
-    ESP_LOGI(TAG, "Battery hardware: %s", g_battery_present ? "detected" : "not detected");
-
-    if (g_boot_mode == BOOT_MODE_CHARGE) {
-        // -------- Charge mode: Wi-Fi off, low power, battery readout --------
-        charge_mode_run();   // never returns (power switch / cold boot to leave)
-    }
 
     if (g_boot_mode == BOOT_MODE_OTA) {
         // -------- OTA mode: STA -> home AP -> GitHub check -> flash inactive slot.
         // Runs in its own generous-stack task (TLS handshake + OTA is stack-heavy);
-        // it draws the OLED directly, so no display_task here. Never returns. --------
+        // feedback is on the serial console + LED, so no status task here.
+        // Never returns. --------
         xTaskCreate(ota_mode_task, "ota", 10240, NULL, 5, NULL);
         while (1) vTaskDelay(pdMS_TO_TICKS(10000));
     }
 
     if (g_boot_mode == BOOT_MODE_WEBUI) {
         // -------- WebUI mode: SoftAP + HTTP control panel, no attack --------
-        g_webui_display = true;                       // display_task draws the connect screen
+        g_webui_display = true;                       // status_log_task notes WebUI is up
         strcpy(current_display_info.status, "WEBUI");
-        xTaskCreate(display_task, "display", 4096, NULL, 2, NULL);
+        xTaskCreate(status_log_task, "status", 3072, NULL, 2, NULL);
 
         wifi_init_apsta_webui();
         led_state = LED_STATE_WEBUI_IDLE;             // rainbow breath
@@ -2394,7 +1882,7 @@ void app_main(void) {
                  g_settings.ap_ssid, WEBUI_AP_IP, WEBUI_MDNS_HOST);
     } else {
         // -------- Attack mode (default): autonomous dual-band deauth --------
-        xTaskCreate(display_task, "display", 4096, NULL, 2, NULL);
+        xTaskCreate(status_log_task, "status", 3072, NULL, 2, NULL);
 
         wifi_init_sta();
         xTaskCreate(button_task, "button", 2048, NULL, 3, NULL);

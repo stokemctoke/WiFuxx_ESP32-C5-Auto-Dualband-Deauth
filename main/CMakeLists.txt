@@ -15,6 +15,5 @@ idf_component_register(
         esp-tls
         cjson
         mdns
-        esp_adc
         led_strip
 )

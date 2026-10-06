@@ -53,6 +53,33 @@ Battery/charge features hide themselves on boards without battery sensing. Note:
 the DevKit has its **BOOT/RST silkscreen swapped** — the RST-labelled button is
 the one that triggers the button-hold actions (the XIAO is unaffected).
 
+## `DevBoard` branch (headless variant)
+A **parallel long-lived branch** (`DevBoard`, also on `origin`) carrying a lean,
+headless build for a **bare ESP32-C5 dev board** with no OLED and no
+battery/charge hardware. It is **not meant to merge into `master`** — think of it
+as a hardware-specific variant that tracks `master`'s attack/WebUI logic, not a
+feature branch awaiting a merge.
+
+What differs from `master`:
+- **Removed:** the SSD1306 OLED driver (I2C, framebuffer, font, animated boot
+  splash) and its four bitmap headers; battery sensing (ADC + calibration, LiPo
+  curve, glyph) and the `esp_adc` dependency; charge mode entirely
+  (`BOOT_MODE_CHARGE`, `charge_mode_run`, the `/charge` route + handler, the
+  WebUI charge button, the `has_battery` config field).
+- **Unchanged:** all attack behaviour and parameters (thresholds, bursts, timing,
+  deauth logic), the WebUI, OTA, and the boot flow (attack-default; hold BOOT 2s
+  for WebUI; 10s hold = factory reset).
+- **Feedback is headless:** status shows on the **onboard WS2812B LED** (GPIO27)
+  and the **serial console** — `display_task` is replaced by a change-gated
+  `status_log_task`, OTA progress logs via `ESP_LOGI`, and the serial ASCII boot
+  splash (`log_boot_splash`) is retained. WebUI copy points at the serial console
+  instead of a device screen.
+
+Builds the same way as `master` (patched ESP-IDF 5.5.1). When porting `master`
+changes to attack or WebUI code, bring them over here too; keep OLED/battery code
+out. If a board has no WS2812B either, the LED path degrades gracefully (a failed
+`led_strip_new_rmt_device` just disables it).
+
 ## Release flow (strict semver: feature=minor, fix=patch, breaking=major)
 1. Commit on a work branch and push.
 2. `git merge --no-ff` into `master`.
@@ -64,7 +91,9 @@ the one that triggers the button-hold actions (the XIAO is unaffected).
 Regenerate the merged bin from a fresh build:
 `(cd build && esptool.py --chip esp32c5 merge_bin -o ../WiFuxx_v<ver>_merged.bin @flash_args)`
 
-`master` is the only long-lived branch — delete work branches after they merge.
+`master` is the only long-lived branch for the shipped firmware — delete work
+branches after they merge. The exception is `DevBoard` (see above), a permanent
+headless variant branch that is intentionally never merged.
 
 ## Customer-facing docs
 `README.md`, `docs/USER-MANUAL-XIAO.md`, `docs/USER-MANUAL-DEVKIT.md`, `docs/QUICK-START-XIAO.md`.
